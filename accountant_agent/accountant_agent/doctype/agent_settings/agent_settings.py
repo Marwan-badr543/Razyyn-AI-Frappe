@@ -179,13 +179,16 @@ def get_agent_settings_name(email: str) -> Optional[str]:
 
 @frappe.whitelist()
 def get_user_usage(email: str) -> dict:
-    """Usage percentages for the caller's own agent account.
+    """Plan usage for the caller's own agent account.
+
+    One number: how much of the plan's monthly budget is spent. The agent
+    server has no daily ceiling, so there is nothing else to report.
 
     Scoped to the caller's own record: usage is billing information, and an
     endpoint that accepted any e-mail would report one customer's consumption
     to another.
     """
-    zero: dict = {"daily_usage_percentage": 0.0, "total_usage_percentage": 0.0, "plan": "free"}
+    zero: dict = {"total_usage_percentage": 0.0, "plan": "free"}
 
     doc = _get_own_settings_doc(email)
     if not doc:
@@ -218,7 +221,6 @@ def get_user_usage(email: str) -> dict:
 
         data = response.json()
         return {
-            "daily_usage_percentage": round(data.get("daily_usage_percentage", 0.0), 1),
             "total_usage_percentage": round(data.get("total_usage_percentage", 0.0), 1),
             "plan": data.get("plan", "free"),
         }

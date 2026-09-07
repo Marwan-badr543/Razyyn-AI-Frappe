@@ -83,7 +83,6 @@ function load_usage_stats(frm, email) {
 }
 
 function render_usage_dashboard(frm, data, email) {
-	let daily = data.daily_usage_percentage || 0.0;
 	let total = data.total_usage_percentage || 0.0;
 
 	function get_status_theme(val) {
@@ -92,7 +91,6 @@ function render_usage_dashboard(frm, data, email) {
 		return { bg: '#d1fae5', text: '#059669', bar: 'linear-gradient(90deg, #10a37f, #34d399)' };
 	}
 
-	let daily_theme = get_status_theme(daily);
 	let total_theme = get_status_theme(total);
 
 	let html = `
@@ -117,9 +115,9 @@ function render_usage_dashboard(frm, data, email) {
 							text-transform: uppercase;
 							padding: 2px 8px;
 							border-radius: 12px;
-							background-color: ${data.plan === 'ultra' ? '#f5f3ff' : data.plan === 'pro' ? '#eff6ff' : '#f3f4f6'};
-							color: ${data.plan === 'ultra' ? '#7c3aed' : data.plan === 'pro' ? '#2563eb' : '#4b5563'};
-							border: 1px solid ${data.plan === 'ultra' ? '#ddd6fe' : data.plan === 'pro' ? '#bfdbfe' : '#e5e7eb'};
+							background-color: ${data.plan === 'ultra' ? '#f5f3ff' : data.plan === 'pro' ? '#eff6ff' : data.plan === 'plus' ? '#ecfdf5' : '#f3f4f6'};
+							color: ${data.plan === 'ultra' ? '#7c3aed' : data.plan === 'pro' ? '#2563eb' : data.plan === 'plus' ? '#059669' : '#4b5563'};
+							border: 1px solid ${data.plan === 'ultra' ? '#ddd6fe' : data.plan === 'pro' ? '#bfdbfe' : data.plan === 'plus' ? '#a7f3d0' : '#e5e7eb'};
 						">
 							${__(data.plan || 'free')}
 						</span>
@@ -130,48 +128,7 @@ function render_usage_dashboard(frm, data, email) {
 				</button>
 			</div>
 
-			<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px;">
-				<!-- Daily Usage Progress Bar -->
-				<div style="
-					background: var(--bg-color, #f9fafb);
-					padding: 16px;
-					border-radius: 10px;
-					border: 1px solid var(--border-color, #f3f4f6);
-				">
-					<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-						<span style="font-size: 13px; font-weight: 600; color: var(--text-color, #374151);">
-							${__('Daily Limit Usage')}
-						</span>
-						<span style="
-							background-color: ${daily_theme.bg};
-							color: ${daily_theme.text};
-							font-size: 12px;
-							font-weight: 700;
-							padding: 2px 10px;
-							border-radius: 12px;
-						">
-							${daily}%
-						</span>
-					</div>
-					<div style="
-						height: 10px;
-						background-color: #e5e7eb;
-						border-radius: 10px;
-						overflow: hidden;
-					">
-						<div style="
-							height: 100%;
-							width: ${Math.min(daily, 100)}%;
-							background: ${daily_theme.bar};
-							border-radius: 10px;
-							transition: width 0.6s ease-in-out;
-						"></div>
-					</div>
-					<p style="font-size: 11.5px; color: var(--text-muted, #6b7280); margin-top: 8px; margin-bottom: 0;">
-						${__('Resets every 24 hours')}
-					</p>
-				</div>
-
+			<div style="display: grid; grid-template-columns: minmax(280px, 1fr); gap: 20px;">
 				<!-- Total Plan Usage Progress Bar -->
 				<div style="
 					background: var(--bg-color, #f9fafb);
