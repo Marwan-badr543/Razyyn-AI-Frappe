@@ -29,7 +29,11 @@ from accountant_agent.accountant_agent.doctype.agent_settings.agent_settings imp
 #: re-transmitted and re-tokenised on every message, until the request was
 #: megabytes of history to carry one sentence of question. project_rules.md §3
 #: names this directly: never pass unbounded context to the model.
-MAX_HISTORY_MESSAGES: int = 40
+#:
+#: 50 rather than 40 because the manager on the agent server is now the ONLY
+#: reader of the transcript — the specialists receive a brief instead — and its
+#: planning quality is bounded by what it can see.
+MAX_HISTORY_MESSAGES: int = 50
 
 #: Messages returned to the browser when a chat is opened. The UI pages older
 #: messages in on demand rather than materialising an unbounded conversation.
@@ -542,7 +546,7 @@ def update_chat_timestamp(session_id: str) -> None:
 # ---------------- Whitelisted Page Methods ----------------
 
 @frappe.whitelist()
-def get_connection_status(agent_email=None):
+def get_connection_status(agent_email: str | None = None) -> dict:
 	"""Checks if connection status settings are present for the given email."""
 	user = frappe.session.user
 	if user == "Guest" or not agent_email:
@@ -561,7 +565,7 @@ def get_connection_status(agent_email=None):
 
 
 @frappe.whitelist()
-def authenticate_agent(mode, email, password, company_name=None):
+def authenticate_agent(mode: str, email: str, password: str, company_name: str | None = None) -> dict:
 	"""Handles login or signup requests against the agent server and updates local settings."""
 	user = frappe.session.user
 	if user == "Guest":
@@ -650,7 +654,13 @@ def get_latest_plan_message(session_id: str, lock: bool = False):
 
 
 @frappe.whitelist()
-def send_message(message, session_id, agent_email, agent_type="auto", file_urls=None):
+def send_message(
+	message: str,
+	session_id: str,
+	agent_email: str,
+	agent_type: str = "auto",
+	file_urls: list[str] | str | None = None,
+) -> dict:
 	"""Proxy message send to agent by enqueuing a background worker to handle streaming."""
 	user = _assert_signed_in()
 	assert_owns_session(session_id)
@@ -854,6 +864,10 @@ def process_agent_message_background(
 			raise Exception(err_detail)
 
 		current_event = None
+		#: Set by a "done" event: the turn produced an answer for the customer.
+		answered = False
+		#: The last step failure seen, shown only if nothing else answers.
+		last_error = ""
 		for line in response.iter_lines(chunk_size=1):
 			if not line:
 				continue
@@ -902,6 +916,20 @@ def process_agent_message_background(
 						},
 						user=user,
 					)
+				elif current_event == "todo":
+					# The manager's live checklist. Relayed whole on every
+					# change — it is small (id/title/status per task) and a full
+					# redraw keeps the client stateless about ordering. The UI
+					# pins it inside the stream bubble and ticks tasks off.
+					frappe.publish_realtime(
+						event="agent_todo_update",
+						message={
+							"session_id": session_id,
+							"status": data_json.get("status", ""),
+							"tasks": data_json.get("tasks", []),
+						},
+						user=user,
+					)
 				elif current_event == "tool_start":
 					frappe.publish_realtime(
 						event="agent_tool_start",
@@ -914,6 +942,7 @@ def process_agent_message_background(
 						user=user,
 					)
 				elif current_event == "done":
+					answered = True
 					ai_response = data_json.get("response", "")
 
 					# WHAT THE AGENT PAUSED FOR, AND WHAT THE PERSON READS, ARE
@@ -953,8 +982,42 @@ def process_agent_message_background(
 							message={"session_id": session_id, "questions": questions},
 							user=user,
 						)
+				elif current_event == "cancelled":
+					# The customer stopped the work. That IS the answer to this
+					# turn; nothing failed and nothing is missing.
+					answered = True
+					save_chat_event_if_not_duplicate(session_id, "ai", "⚠️ **Cancelled**")
+					update_chat_timestamp(session_id)
+					frappe.publish_realtime(
+						event="agent_message_cancelled",
+						message={"session_id": session_id},
+						user=user,
+					)
 				elif current_event == "error":
-					raise Exception(data_json.get("detail", "Unknown error in stream"))
+					# A STEP THAT FAILED IS NOT A TURN THAT FAILED.
+					#
+					# The manager runs a checklist: one specialist can fail (an
+					# audit the customer's plan does not include, an ERP that
+					# refused a write) while the rest of the list still runs and
+					# still has a report to give. Raising here threw that report
+					# away and showed "⚠️ Error: Unknown error in stream" —
+					# neither the reason nor the work. The reason is remembered
+					# and only becomes the turn's answer if the stream ends
+					# without one.
+					last_error = (
+						data_json.get("detail")
+						or data_json.get("message")
+						or data_json.get("error")
+						or ""
+					)
+					if last_error:
+						frappe.log_error(
+							title="Accountant Agent: step failed",
+							message=f"Session {session_id}: {last_error}",
+						)
+
+		if not answered:
+			raise Exception(last_error or "The request ended without an answer.")
 
 	except Exception as e:
 		error_msg = str(e)
@@ -1220,7 +1283,7 @@ def _answer_text(message: str) -> str:
 
 
 @frappe.whitelist()
-def cancel_agent(session_id, agent_email):
+def cancel_agent(session_id: str, agent_email: str) -> dict:
 	"""Proxy cancellation request to the agent server."""
 	_assert_signed_in()
 	assert_owns_session(session_id)
@@ -1270,6 +1333,54 @@ def cancel_agent(session_id, agent_email):
 
 
 @frappe.whitelist()
+def get_run_state(session_id: str, agent_email: str) -> dict:
+	"""The manager's checklist for one session, for redrawing after a reload.
+
+	A thin proxy to the agent server's GET /agent/chat/state. Called once on
+	page load or session switch — never polled: live updates arrive over the
+	socket as `agent_todo_update` events. Degrades to "none" on any failure,
+	because a missing checklist must not break opening a chat.
+	"""
+	_assert_signed_in()
+	assert_owns_session(session_id)
+
+	doc = get_agent_settings_doc(agent_email)
+	if not doc:
+		return {"status": "none", "tasks": []}
+
+	access_token = doc.get_password("access_token", raise_exception=False)
+	if not access_token:
+		return {"status": "none", "tasks": []}
+
+	headers = {"Authorization": f"Bearer {access_token}"}
+	try:
+		response = requests.get(
+			f"{get_agent_server_url()}/agent/chat/state",
+			params={"session_id": session_id},
+			headers=headers,
+			timeout=15,
+		)
+		if response.status_code == 401:
+			new_access_token = refresh_agent_token_on_server(access_token)
+			if new_access_token:
+				save_agent_settings(agent_email, access_token=new_access_token)
+				headers["Authorization"] = f"Bearer {new_access_token}"
+				response = requests.get(
+					f"{get_agent_server_url()}/agent/chat/state",
+					params={"session_id": session_id},
+					headers=headers,
+					timeout=15,
+				)
+		if response.status_code == 200:
+			body = response.json()
+			if isinstance(body, dict):
+				return body
+	except requests.exceptions.RequestException as exc:
+		frappe.log_error(f"Run state request error: {exc}", "Accountant Agent Run State")
+	return {"status": "none", "tasks": []}
+
+
+@frappe.whitelist()
 def get_chat_history(session_id: str, limit: Optional[int] = None) -> list[dict]:
 	"""The caller's own transcript for one session, most recent page first.
 
@@ -1291,7 +1402,7 @@ def get_chat_history(session_id: str, limit: Optional[int] = None) -> list[dict]
 
 
 @frappe.whitelist()
-def disconnect_agent(agent_email):
+def disconnect_agent(agent_email: str | None = None) -> dict:
 	"""Disconnects the agent for the given email by clearing the access token locally."""
 	if not agent_email:
 		return {"success": False}
@@ -1359,7 +1470,7 @@ def delete_agent_account(agent_email: str) -> dict:
 # ---------------- Chat Session Management Endpoints ----------------
 
 @frappe.whitelist()
-def get_chats():
+def get_chats() -> list[dict]:
 	"""Retrieves all chat sessions owned by the logged-in user."""
 	user = frappe.session.user
 	if user == "Guest":
@@ -1374,7 +1485,7 @@ def get_chats():
 
 
 @frappe.whitelist()
-def create_chat(title=None):
+def create_chat(title: str | None = None) -> dict:
 	"""Creates a new chat session and returns it."""
 	user = frappe.session.user
 	if user == "Guest":
@@ -1400,7 +1511,7 @@ def create_chat(title=None):
 
 
 @frappe.whitelist()
-def update_chat_title(session_id, title):
+def update_chat_title(session_id: str, title: str) -> dict:
 	"""Updates the title of a chat session."""
 	if not session_id or not title:
 		frappe.throw(_("Session ID and Title are required."))
@@ -1426,7 +1537,7 @@ def update_chat_title(session_id, title):
 
 
 @frappe.whitelist()
-def delete_chat(session_id):
+def delete_chat(session_id: str) -> dict:
 	"""Deletes a chat session (cascade deletion of messages is handled by the before_delete hook)."""
 	if not session_id:
 		return {"success": False}
@@ -1445,7 +1556,7 @@ def delete_chat(session_id):
 
 
 @frappe.whitelist()
-def create_chat_with_id(session_id, title=None):
+def create_chat_with_id(session_id: str, title: str | None = None) -> dict:
 	"""Creates a new chat session with a pre-defined session_id."""
 	user = frappe.session.user
 	if user == "Guest":

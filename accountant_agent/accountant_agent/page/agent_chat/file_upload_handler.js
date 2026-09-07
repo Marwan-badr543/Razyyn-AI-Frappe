@@ -6,12 +6,9 @@
  *
  * Rules:
  *   - Whitelisted safe file extensions only (accountant safe types).
- *   - File count and size budgets come from the selected agent's entry in
- *     AgentSelector.AGENT_DEFINITIONS, which mirrors that agent's AgentSettings
- *     on the server. Adding an agent therefore needs no change to this file.
- *   - Agents with is_aggregate = false (Auto) enforce a per-file ceiling.
- *     Agents with is_aggregate = true enforce separate aggregate budgets for
- *     Excel and non-Excel attachments.
+ *   - File count and size budgets mirror ROUTER_SETTINGS on the agent server —
+ *     the loosest gate any desk allows, because the manager assigns the desk
+ *     after upload. The assigned desk re-validates server-side.
  */
 
 class FileUploadHandler {
@@ -142,19 +139,12 @@ class FileUploadHandler {
 		});
 	}
 
-	// The extensions the CURRENTLY SELECTED desk accepts.
-	//
-	// Most desks take whatever the practice accepts generally. A desk may narrow
-	// it by putting `allowed_extensions` in its rules block in agent_selector.js;
-	// the reconciliation desk does, because it compares tables. A desk without
-	// the key is unaffected, which is why this falls back rather than defaulting.
+	// The manager decides which desk handles the work, so the picker accepts
+	// everything the practice accepts; the desk actually assigned re-validates
+	// against its own (possibly tighter) limits on the server, before any work
+	// is spent.
 	_desk_extensions() {
-		let selector = this.chat && this.chat.agent_selector ? this.chat.agent_selector : null;
-		let rules = (selector && typeof selector.get_rules === 'function') ? selector.get_rules() : null;
-		let allowed = rules && rules.allowed_extensions;
-		return (Array.isArray(allowed) && allowed.length)
-			? new Set(allowed)
-			: this.ALLOWED_EXTENSIONS;
+		return this.ALLOWED_EXTENSIONS;
 	}
 
 	_open_file_picker() {
@@ -193,25 +183,23 @@ class FileUploadHandler {
 	}
 
 	/**
-	 * Validates candidate file batch against the selected agent's rules.
+	 * Validates candidate file batch against the gate the server applies.
 	 *
-	 * Limits are read from AgentSelector.AGENT_DEFINITIONS rather than repeated
-	 * here. They were previously hardcoded, which let the page/ and public/
-	 * copies of this file drift apart (10 MB vs 15 MB for the same agent) and
-	 * meant every new agent silently inherited the wrong budget.
+	 * These numbers MUST mirror ROUTER_SETTINGS on the agent server
+	 * (agent/agent_services/router_service/router.py) — the loosest ceiling any
+	 * desk allows, because the manager has not assigned a desk yet. The desk
+	 * actually assigned re-validates against its own settings server-side, so a
+	 * mismatch here only costs politeness, never safety.
 	 */
 	_validate_batch(incoming_files) {
-		let selector = this.chat && this.chat.agent_selector ? this.chat.agent_selector : null;
-		let agent_type = selector ? selector.get_selected_agent() : 'ask';
-
-		// Fall back to the most restrictive profile if the selector is missing,
-		// so a UI failure can never widen an upload budget.
-		let rules = (selector && typeof selector.get_rules === 'function' && selector.get_rules())
-			|| { max_files: 5, max_per_file_mb: 1, max_non_excel_total_mb: 1, max_excel_total_mb: 1, is_aggregate: false };
-
-		let agent_name = (selector && selector.AGENT_DEFINITIONS && selector.AGENT_DEFINITIONS[agent_type])
-			? selector.AGENT_DEFINITIONS[agent_type].name
-			: agent_type;
+		let rules = {
+			max_files: 8,
+			max_per_file_mb: 40,
+			max_non_excel_total_mb: 40,
+			max_excel_total_mb: 40,
+			is_aggregate: true
+		};
+		let agent_name = __('Razyyn AI');
 
 		// 1. Total file count
 		let total_count = this.pending_attachments.length + incoming_files.length;

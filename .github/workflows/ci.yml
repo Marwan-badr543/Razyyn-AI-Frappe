@@ -1,0 +1,36 @@
+name: CI & Security Scan
+
+on:
+  push:
+    branches: ["*"]
+  pull_request:
+    branches: ["*"]
+  workflow_dispatch:
+
+jobs:
+  semgrep:
+    name: Frappe Security & Linter Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Download Official Frappe Semgrep Rules
+        run: git clone --depth 1 https://github.com/frappe/semgrep-rules.git frappe-semgrep-rules
+
+      - name: Run Frappe Security Scan (Blocking Errors)
+        run: |
+          semgrep --config ./frappe-semgrep-rules/rules --severity ERROR --exclude "frappe-semgrep-rules" --exclude "tests" .
+
+      - name: Informational Code Quality Scan
+        continue-on-error: true
+        run: |
+          semgrep --config ./frappe-semgrep-rules/rules --exclude "frappe-semgrep-rules" --exclude "tests" .

@@ -115,6 +115,9 @@ class ChatSessionManager {
 				if (stream.accumulated) {
 					this.chat.ui_manager.update_stream_bubble(this.chat.msg_box, stream.bubble_id, stream.accumulated);
 				}
+				if (stream.todo) {
+					this.chat.ui_manager.render_todo_list(this.chat.msg_box, stream.bubble_id, stream.todo);
+				}
 				this.chat.ui_manager.update_thinking_duration(this.chat.msg_box, stream.bubble_id, stream.elapsed_seconds);
 
 				// Expand accordion body for active stream
@@ -248,6 +251,9 @@ class ChatSessionManager {
 				if (stream.accumulated) {
 					this.chat.ui_manager.update_stream_bubble(this.chat.msg_box, stream.bubble_id, stream.accumulated);
 				}
+				if (stream.todo) {
+					this.chat.ui_manager.render_todo_list(this.chat.msg_box, stream.bubble_id, stream.todo);
+				}
 				this.chat.ui_manager.update_thinking_duration(this.chat.msg_box, stream.bubble_id, stream.elapsed_seconds);
 
 				let row = this.chat.msg_box.find(`#row-${stream.bubble_id}`);
@@ -255,10 +261,56 @@ class ChatSessionManager {
 				row.find('.thinking-header-icon').css('transform', 'rotate(90deg)');
 
 				this.chat.message_handler.set_button_state('cancel');
+			} else {
+				// No live stream in memory (page was reloaded): ask the server
+				// whether the manager still has an unfinished checklist for this
+				// session and redraw it. One call per open, never polled — live
+				// updates arrive over the socket.
+				this.restore_todo_state();
 			}
 		} catch (e) {
 			console.error("Error loading chat history:", e);
 			this.chat.ui_manager.render_welcome(this.chat.msg_box);
+		}
+
+		// A REBUILT TRANSCRIPT ALWAYS SHOWS ITS NEWEST MESSAGE.
+		//
+		// This method empties the box and re-appends every message, which
+		// leaves the scroll at the very top — the first thing the customer
+		// ever said. `switch_session` scrolled after calling this, so opening
+		// a chat looked right; answering a question did not, because
+		// `submit_clarification_popup` reloads the history to redraw the
+		// settled fold and had no scroll of its own. It belongs here, where
+		// the rebuild happens, not at one of the two call sites.
+		//
+		// Twice: once now, and once after the browser has laid the messages
+		// out, because charts, tables and file chips gain their height a
+		// frame later and would otherwise leave the view mid-transcript.
+		this.chat.ui_manager.force_scroll_to_bottom(this.chat.msg_box);
+		let msg_box = this.chat.msg_box;
+		let ui = this.chat.ui_manager;
+		requestAnimationFrame(() => ui.force_scroll_to_bottom(msg_box));
+	}
+
+	async restore_todo_state() {
+		let session_id = this.session_id;
+		if (!session_id || this.is_new_chat_draft) return;
+		try {
+			let agent_email = localStorage.getItem('connected_agent_email');
+			if (!agent_email) return;
+			let state = await frappe.xcall(
+				'accountant_agent.accountant_agent.page.agent_chat.agent_chat.get_run_state',
+				{ session_id: session_id, agent_email: agent_email }
+			);
+			// Only a run that is still going (or waiting on the customer) is
+			// worth redrawing; a finished run's report is already in history.
+			if (this.session_id === session_id && state
+				&& (state.status === 'active' || state.status === 'paused')
+				&& Array.isArray(state.tasks) && state.tasks.length) {
+				this.chat.ui_manager.render_todo_standalone(this.chat.msg_box, state);
+			}
+		} catch (e) {
+			console.error("Could not restore the task list:", e);
 		}
 	}
 }

@@ -391,25 +391,17 @@ def _writable_doctypes() -> list[dict[str, object]]:
     try:
         frappe.set_user(AGENT_USER)
         for row in policy.allowed_document_types or []:
+            has_create = frappe.has_permission(row.document_type, "create")
+            has_submit = frappe.has_permission(row.document_type, "submit")
+            has_cancel = frappe.has_permission(row.document_type, "cancel")
+            has_amend = frappe.has_permission(row.document_type, "amend")
             results.append(
                 {
                     "doctype": row.document_type,
-                    "create": bool(
-                        row.allow_create
-                        and frappe.has_permission(row.document_type, "create")
-                    ),
-                    "submit": bool(
-                        row.allow_submit
-                        and frappe.has_permission(row.document_type, "submit")
-                    ),
-                    "cancel": bool(
-                        row.allow_cancel
-                        and frappe.has_permission(row.document_type, "cancel")
-                    ),
-                    "amend": bool(
-                        row.allow_amend
-                        and frappe.has_permission(row.document_type, "amend")
-                    ),
+                    "create": bool(row.allow_create and has_create),
+                    "submit": bool(row.allow_submit and has_submit),
+                    "cancel": bool(row.allow_cancel and has_cancel),
+                    "amend": bool(row.allow_amend and has_amend),
                 }
             )
     finally:
