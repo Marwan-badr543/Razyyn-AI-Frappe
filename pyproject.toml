@@ -3,12 +3,18 @@ name = "accountant_agent"
 authors = [
     { name = "Marwan Badr", email = "marwanbadr514@gmail.com"}
 ]
-description = "agent"
+description = "Enterprise AI-Powered Accounting Assistant Agent for Frappe & ERPNext v14"
 requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]
 dependencies = [
     # frappe itself: installed and managed by bench.
+    "pymupdf",
+    "python-docx",
+    "pandas",
+    "python-pptx",
+    "pillow",
+    "requests"
 ]
 
 [build-system]

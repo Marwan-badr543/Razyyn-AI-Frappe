@@ -127,7 +127,7 @@ def execute_select_query(
     request reuses that connection next.
     """
     if frappe.db.db_type == "postgres":
-        frappe.db.sql(f"SET LOCAL statement_timeout = {int(timeout_seconds) * 1000}")
+        frappe.db.sql("SET LOCAL statement_timeout = %s", (int(timeout_seconds) * 1000,))
         # Postgres has no SQL_SELECT_LIMIT equivalent; the cap is applied by the
         # service layer's LIMIT clause, and the slice below is the backstop.
         return frappe.db.sql(query, as_dict=True)[:max_rows]
@@ -136,8 +136,8 @@ def execute_select_query(
     # SELECT on this session, whatever the statement itself says, and
     # max_statement_time aborts server-side work that overruns.
     try:
-        frappe.db.sql(f"SET SESSION SQL_SELECT_LIMIT = {int(max_rows)}")
-        frappe.db.sql(f"SET SESSION max_statement_time = {int(timeout_seconds)}")
+        frappe.db.sql("SET SESSION SQL_SELECT_LIMIT = %s", (int(max_rows),))
+        frappe.db.sql("SET SESSION max_statement_time = %s", (int(timeout_seconds),))
         return frappe.db.sql(query, as_dict=True)
     finally:
         try:
@@ -161,6 +161,17 @@ def chat_session_exists(session_id: str) -> bool:
 def get_chat_session_owner(session_id: str) -> Optional[str]:
     """The ERP user who owns a chat session, or None if it does not exist."""
     return frappe.db.get_value("Agent Chats", session_id, "owner")
+
+
+def get_settings_owner(settings_name: str) -> Optional[str]:
+    """The ERP user an API key belongs to, or None.
+
+    ``find_settings_name_by_api_key`` returns a DOCUMENT NAME, not a person.
+    Ownership questions are about the person, so they resolve through here.
+    """
+    if not settings_name:
+        return None
+    return frappe.db.get_value("Agent Settings", settings_name, "owner")
 
 
 def insert_chat_history_record(

@@ -41,45 +41,54 @@ class ChatUIManager {
 						<path d="M22 38 Q32 43 42 38" stroke="url(#robotGrad)" stroke-width="3" stroke-linecap="round" fill="none" />
 					</svg>
 				</div>
-				<h3>${__('Welcome to Razyyn')}</h3>
+				<h3>${__('Welcome to Razyyn AI')}</h3>
 				<p class="text-muted" style="max-width: 440px; margin: 0 auto; font-size: 14px; line-height: 1.5;">
-					${__('Select your agent mode (Ask, Analyse, or Audit) and upload financial documents or ask questions directly.')}
+					${__('One assistant, a whole accounting team behind it. Describe what you need — even several jobs at once — and watch the task list get done.')}
 				</p>
 				<div class="agent-suggestions-grid">
-					<div class="agent-suggestion-card" data-prompt="${__('Compare bank statements and ledger entries to find any discrepancies.')}">
+					<div class="agent-suggestion-card" data-prompt="${__('Reconcile this bank statement against my bank ledger, find every discrepancy, and create the journal entries needed to settle the differences.')}">
 						<div class="agent-suggestion-card-header">
 							<i class="fa fa-balance-scale"></i>
 							${__('Reconcile bank entries')}
 						</div>
 						<div class="agent-suggestion-card-desc">
-							${__('Compare bank statements and ledger entries to find any discrepancies.')}
+							${__('Compare bank statements and ledger entries, then post the entries that settle the differences.')}
 						</div>
 					</div>
-					<div class="agent-suggestion-card" data-prompt="${__('Provide a complete summary of our cash flow status and highlight any liquidity risks.')}">
+					<div class="agent-suggestion-card" data-prompt="${__('Analyse my sales this year by customer and month, chart the trend, and generate an Excel report of the results.')}">
 						<div class="agent-suggestion-card-header">
 							<i class="fa fa-bar-chart"></i>
-							${__('Analyze Cash Flow')}
+							${__('Analyse my numbers')}
 						</div>
 						<div class="agent-suggestion-card-desc">
-							${__('Provide a complete summary of our cash flow status and highlight any liquidity risks.')}
+							${__('Deep analysis with charts — and the results exported to an Excel file for you.')}
 						</div>
 					</div>
-					<div class="agent-suggestion-card" data-prompt="${__('Run an audit check on all expenses from the past 30 days and flag any policy violations.')}">
+					<div class="agent-suggestion-card" data-prompt="${__('Audit my general ledger for last quarter for anomalies and control violations, and send me the findings summary on Telegram.')}">
 						<div class="agent-suggestion-card-header">
 							<i class="fa fa-shield"></i>
-							${__('Audit recent expenses')}
+							${__('Audit my books')}
 						</div>
 						<div class="agent-suggestion-card-desc">
-							${__('Run an audit check on all expenses from the past 30 days and flag any policy violations.')}
+							${__('Inspect your records for anomalies and fraud — and get the findings sent to your Telegram.')}
 						</div>
 					</div>
-					<div class="agent-suggestion-card" data-prompt="${__('Can you list all outstanding invoices that are overdue and calculate the total amount?')}">
+					<div class="agent-suggestion-card" data-prompt="${__('Create a payment entry of 5,000 for supplier ABC against invoice INV-001, and email me the confirmation on Gmail.')}">
 						<div class="agent-suggestion-card-header">
-							<i class="fa fa-file-text-o"></i>
-							${__('Overdue Invoices')}
+							<i class="fa fa-pencil-square-o"></i>
+							${__('Record documents')}
 						</div>
 						<div class="agent-suggestion-card-desc">
-							${__('Can you list all outstanding invoices that are overdue and calculate the total amount?')}
+							${__('Prepare entries, payments and invoices for your approval — with the confirmation emailed to you.')}
+						</div>
+					</div>
+					<div class="agent-suggestion-card" data-prompt="${__('What is my current cash position and who are my top 5 overdue customers? Generate the overdue list as an Excel file.')}">
+						<div class="agent-suggestion-card-header">
+							<i class="fa fa-comments"></i>
+							${__('Ask about your business')}
+						</div>
+						<div class="agent-suggestion-card-desc">
+							${__('Instant answers from your live records — exportable to Excel whenever you need a file.')}
 						</div>
 					</div>
 				</div>
@@ -154,7 +163,14 @@ class ChatUIManager {
 				</div>
 			`;
 
-			bubble_el.empty().append(plan_html);
+			// The checklist lives in this bubble too, and emptying the bubble
+			// is what used to make it vanish the moment the agent asked for an
+			// approval — exactly when the customer most wants to see where the
+			// work stands. Keep the wrapper, replace only the message body.
+			let $todo = bubble_el.find('.agent-todo-wrapper').detach();
+			bubble_el.empty();
+			if ($todo.length) bubble_el.append($todo);
+			bubble_el.append(plan_html);
 			
 			// Click to expand/collapse
 			let container = bubble_el.find(`#${container_id}`);
@@ -339,9 +355,12 @@ class ChatUIManager {
 				let chars_per_tick = 1;
 				let base_delay = 20;
 
-				if (content.length > 3000) { chars_per_tick = 4; base_delay = 5; }
-				else if (content.length > 1500) { chars_per_tick = 3; base_delay = 10; }
-				else if (content.length > 600) { chars_per_tick = 2; base_delay = 15; }
+				// The TYPED text is the one with the file markers taken out —
+				// the chip is already drawn above. Typing the raw content put
+				// the marker on screen character by character.
+				if (display_content.length > 3000) { chars_per_tick = 4; base_delay = 5; }
+				else if (display_content.length > 1500) { chars_per_tick = 3; base_delay = 10; }
+				else if (display_content.length > 600) { chars_per_tick = 2; base_delay = 15; }
 
 				function type() {
 					if (!self.typing_timers.includes(timerId)) {
@@ -349,8 +368,8 @@ class ChatUIManager {
 						return;
 					}
 
-					if (index < content.length) {
-						let chunk = content.slice(index, index + chars_per_tick);
+					if (index < display_content.length) {
+						let chunk = display_content.slice(index, index + chars_per_tick);
 						current_text += chunk;
 						index += chars_per_tick;
 
@@ -362,7 +381,7 @@ class ChatUIManager {
 						}
 						text_el.html(parsed);
 
-						if (index % (chars_per_tick * 3) === 0 || index >= content.length) {
+						if (index % (chars_per_tick * 3) === 0 || index >= display_content.length) {
 							self.scroll_to_bottom(msg_box);
 						}
 
@@ -378,7 +397,7 @@ class ChatUIManager {
 					} else {
 						self.typing_timers = self.typing_timers.filter(t => t !== timerId);
 						bubble_el.removeClass('typing-active');
-						let parsed = self.parse_markdown(content);
+						let parsed = self.parse_markdown(display_content);
 						let text_el = bubble_el.find('.agent-msg-text-content');
 						if (!text_el.length) {
 							bubble_el.append('<div class="agent-msg-text-content"></div>');
@@ -424,6 +443,8 @@ class ChatUIManager {
 		let bubble_html = `
 			<div class="agent-msg-row ai" id="row-${bubble_id}" data-session-id="${session_id}">
 				<div class="agent-msg-bubble streaming-active" id="${bubble_id}">
+					<!-- Manager's live checklist -->
+					<div class="agent-todo-wrapper" style="display: none;"></div>
 					<!-- Collapsible Thinking Wrapper -->
 					<div class="agent-thinking-wrapper" style="display: none;">
 						<div class="thinking-header-toggle">
@@ -460,6 +481,180 @@ class ChatUIManager {
 				icon.css('transform', 'rotate(90deg)');
 			}
 		});
+	}
+
+	// ─── Manager todo list ──────────────────────────────────────────────────
+	//
+	// The manager plans the customer's request as a checklist of tasks and
+	// streams every status change as an `agent_todo_update` event. The panel is
+	// redrawn WHOLE on each event — it is small, and a full redraw keeps this
+	// code stateless about ordering. A completed task folds its result excerpt
+	// behind a click, so the transcript stays one report from one voice.
+
+	_todo_status_icon(status) {
+		switch (status) {
+			case 'running': return '<i class="fa fa-cog fa-spin" style="color: var(--chat-primary);"></i>';
+			case 'done': return '<i class="fa fa-check-circle" style="color: #10a37f;"></i>';
+			case 'waiting': return '<i class="fa fa-question-circle" style="color: #f59e0b;"></i>';
+			case 'failed': return '<i class="fa fa-times-circle" style="color: #ef4444;"></i>';
+			case 'skipped': return '<i class="fa fa-minus-circle" style="color: var(--chat-text-muted);"></i>';
+			default: return '<i class="fa fa-circle-o" style="color: var(--chat-text-muted);"></i>';
+		}
+	}
+
+	_todo_kind_icon(task) {
+		if (task.kind === 'generate_document') return 'fa-file-text-o';
+		if (task.kind === 'send_message') return 'fa-paper-plane';
+		let by_desk = {
+			ask: 'fa-comments', analyse: 'fa-bar-chart', audit: 'fa-shield',
+			reconcile: 'fa-balance-scale', create: 'fa-pencil-square-o'
+		};
+		return by_desk[task.assignee] || 'fa-tasks';
+	}
+
+	_todo_status_label(status) {
+		switch (status) {
+			case 'running': return __('In progress');
+			case 'done': return __('Done');
+			case 'waiting': return __('Waiting for you');
+			case 'failed': return __('Failed');
+			case 'skipped': return __('Skipped');
+			default: return __('Pending');
+		}
+	}
+
+	_todo_panel_html(todo) {
+		let tasks = (todo && todo.tasks) || [];
+		if (!tasks.length) return '';
+
+		let done_count = tasks.filter(t => t.status === 'done').length;
+		let rows = tasks.map(task => {
+			let has_detail = task.status === 'done' && task.detail;
+			let detail_html = has_detail
+				? `<div class="agent-todo-detail" style="display: none;">${this.parse_markdown(task.detail)}</div>`
+				: '';
+			let caret = has_detail
+				? '<i class="fa fa-chevron-down agent-todo-caret"></i>'
+				: '';
+			return `
+				<div class="agent-todo-item status-${task.status} ${has_detail ? 'has-detail' : ''}" data-task-id="${task.id}">
+					<div class="agent-todo-item-row">
+						<span class="agent-todo-status-icon">${this._todo_status_icon(task.status)}</span>
+						<i class="fa ${this._todo_kind_icon(task)} agent-todo-kind-icon"></i>
+						<span class="agent-todo-title">${frappe.utils.escape_html(task.title || '')}</span>
+						<span class="agent-todo-status-label">${this._todo_status_label(task.status)}</span>
+						${caret}
+					</div>
+					${detail_html}
+				</div>
+			`;
+		}).join('');
+
+		return `
+			<div class="agent-todo-panel">
+				<div class="agent-todo-header">
+					<span class="agent-todo-header-title">
+						<i class="fa fa-list-ul"></i> ${__('Task list')}
+					</span>
+					<span class="agent-todo-progress">${done_count}/${tasks.length}</span>
+				</div>
+				<div class="agent-todo-items">${rows}</div>
+			</div>
+		`;
+	}
+
+	_bind_todo_events($wrapper) {
+		$wrapper.find('.agent-todo-item.has-detail .agent-todo-item-row').on('click', function () {
+			let $item = $(this).closest('.agent-todo-item');
+			let $detail = $item.find('.agent-todo-detail');
+			let $caret = $item.find('.agent-todo-caret');
+			if ($detail.is(':visible')) {
+				$detail.slideUp(150);
+				$caret.css('transform', 'rotate(0deg)');
+			} else {
+				$detail.slideDown(150);
+				$caret.css('transform', 'rotate(180deg)');
+			}
+		});
+	}
+
+	// A run that has stopped for good: nothing left to watch.
+	_todo_is_finished(todo) {
+		return ['done', 'partial', 'failed', 'cancelled'].includes((todo && todo.status) || '');
+	}
+
+	// The checklist belongs to the RUN, not to a chat bubble. One panel exists
+	// at a time, it lives in the newest bubble, and it stays on screen while
+	// the run is paused for a question or an approval — a customer answering
+	// one must still see what is done and what is coming. It is removed the
+	// moment the run ends or is cancelled, so a finished list can never sit in
+	// the transcript still showing yesterday's steps as "Pending".
+	clear_todo_panels(msg_box) {
+		msg_box.find('.agent-todo-standalone').remove();
+		msg_box.find('.agent-todo-wrapper').empty().hide();
+	}
+
+	render_todo_list(msg_box, bubble_id, todo) {
+		if (this._todo_is_finished(todo)) {
+			this.clear_todo_panels(msg_box);
+			return;
+		}
+
+		let bubble_el = msg_box.find(`#${bubble_id}`);
+		let wrapper = bubble_el.length ? bubble_el.find('.agent-todo-wrapper') : $();
+		if (!wrapper.length) {
+			// No live bubble to draw into (a resumed turn whose events arrived
+			// first): the checklist still gets shown, on its own row.
+			this.render_todo_standalone(msg_box, todo);
+			return;
+		}
+
+		let html = this._todo_panel_html(todo);
+		if (!html) return;
+
+		// Any earlier copy of this checklist — in a previous turn's bubble or
+		// on its own row — is history now.
+		msg_box.find('.agent-todo-standalone').remove();
+		msg_box.find('.agent-todo-wrapper').not(wrapper).empty().hide();
+
+		let was_near_bottom = this.is_near_bottom(msg_box);
+		// Preserve which details the customer had open across the redraw.
+		let open_ids = [];
+		wrapper.find('.agent-todo-item').each(function () {
+			if ($(this).find('.agent-todo-detail').is(':visible')) {
+				open_ids.push($(this).attr('data-task-id'));
+			}
+		});
+
+		wrapper.html(html).show();
+		this._bind_todo_events(wrapper);
+		open_ids.forEach(id => {
+			let $item = wrapper.find(`.agent-todo-item[data-task-id="${id}"]`);
+			$item.find('.agent-todo-detail').show();
+			$item.find('.agent-todo-caret').css('transform', 'rotate(180deg)');
+		});
+
+		if (was_near_bottom) {
+			this.force_scroll_to_bottom(msg_box);
+		}
+	}
+
+	// The reload path: no stream bubble exists, so the checklist of a run that
+	// is still active or paused gets its own row at the end of the transcript.
+	render_todo_standalone(msg_box, todo) {
+		let html = this._todo_panel_html(todo);
+		if (!html) return;
+		msg_box.find('.agent-todo-standalone').remove();
+		let $row = $(`
+			<div class="agent-msg-row ai agent-todo-standalone">
+				<div class="agent-msg-bubble" style="max-width: 100%;">
+					<div class="agent-todo-wrapper">${html}</div>
+				</div>
+			</div>
+		`);
+		msg_box.append($row);
+		this._bind_todo_events($row);
+		this.force_scroll_to_bottom(msg_box);
 	}
 
 	update_stream_bubble(msg_box, bubble_id, content) {
@@ -597,9 +792,30 @@ class ChatUIManager {
 				this.render_plan_card(bubble_el, parsed_data, datetime);
 				bubble_el.find('.agent-thinking-wrapper').hide();
 			} else {
+				// A GENERATED FILE IS A CHIP THEY CAN OPEN, NOT A PATH THEY READ.
+				//
+				// This is the LIVE ending of a run; append_message is the same
+				// message after a reload. Only that one ever rendered the
+				// [FILE:name:url] marker, so a customer watching their file being
+				// produced was shown "/private/files/report3668e6.pdf" as plain
+				// text — nothing to click, and no way to open the file they had
+				// just asked for until they reloaded the page.
+				let display_content = content;
+				let attachments_html = '';
+				if (typeof content === 'string' && this.chat.attachments_renderer
+					&& this.chat.attachments_renderer.has_attachments(content)) {
+					let attached = this.chat.attachments_renderer.parse_and_render(content);
+					display_content = attached.text;
+					attachments_html = attached.attachments_html;
+				}
+
 				let text_el = bubble_el.find('.agent-msg-text-content');
-				let parsed = this.parse_markdown(content);
-				text_el.html(parsed);
+				text_el.html(this.parse_markdown(display_content));
+				// Finalising twice must not stack two copies of the same chip.
+				bubble_el.find('.agent-chat-attachments').remove();
+				if (attachments_html) {
+					text_el.before(attachments_html);
+				}
 			}
 
 			if (datetime) {

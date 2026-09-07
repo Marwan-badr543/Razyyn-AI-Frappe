@@ -1,4 +1,3 @@
-{% include "accountant_agent/accountant_agent/page/agent_chat/agent_selector.js" %}
 {% include "accountant_agent/accountant_agent/page/agent_chat/file_upload_handler.js" %}
 {% include "accountant_agent/accountant_agent/page/agent_chat/chat_attachments_renderer.js" %}
 {% include "accountant_agent/accountant_agent/page/agent_chat/chat_ui_manager.js" %}
@@ -6,6 +5,10 @@
 {% include "accountant_agent/accountant_agent/page/agent_chat/chat_message_handler.js" %}
 
 frappe.pages['agent-chat'].on_page_load = function (wrapper) {
+	try {
+		delete localStorage['_page:agent-chat'];
+	} catch (e) {}
+
 	let page = frappe.ui.make_app_page({
 		parent: wrapper,
 		title: __('Razyyn AI'),
@@ -124,7 +127,6 @@ class AccountantAgentChat {
 		this.active_streams = {};
 
 		// Instantiate Sub-Managers (Separation of Responsibilities)
-		this.agent_selector = null;
 		this.file_upload_handler = null;
 		this.attachments_renderer = new ChatAttachmentsRenderer();
 		this.ui_manager = new ChatUIManager(this);
@@ -273,6 +275,31 @@ class AccountantAgentChat {
 			}
 		});
 
+		frappe.realtime.on("agent_todo_update", (data) => {
+			if (data && data.session_id) {
+				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
+				this.active_streams = this.active_streams || {};
+				if (!this.active_streams[data.session_id]) {
+					this.active_streams[data.session_id] = {
+						bubble_id: `stream-${this.generate_uuid()}`,
+						accumulated: "",
+						reasoning: "",
+						steps: [],
+						status: "",
+						start_time: Date.now(),
+						elapsed_seconds: 0
+					};
+					this.start_stream_timer(data.session_id);
+				}
+				let stream = this.active_streams[data.session_id];
+				stream.todo = { status: data.status || '', tasks: data.tasks || [] };
+
+				if (data.session_id === this.session_manager.session_id) {
+					this.ui_manager.render_todo_list(this.msg_box, stream.bubble_id, stream.todo);
+				}
+			}
+		});
+
 		frappe.realtime.on("agent_message_done", async (data) => {
 			if (data && data.session_id) {
 				if (this.message_handler.cancelled_sessions.has(data.session_id)) {
@@ -336,6 +363,7 @@ class AccountantAgentChat {
 				}
 
 				if (data.session_id === active_session_id) {
+					this.ui_manager.clear_todo_panels(this.msg_box);
 					this.ui_manager.hide_typing_indicator(this.msg_box);
 					this.message_handler.set_button_state('send');
 				}
@@ -364,6 +392,7 @@ class AccountantAgentChat {
 				}
 
 				if (data.session_id === active_session_id) {
+					this.ui_manager.clear_todo_panels(this.msg_box);
 					this.ui_manager.hide_typing_indicator(this.msg_box);
 					this.message_handler.set_button_state('send');
 				}
@@ -552,9 +581,7 @@ class AccountantAgentChat {
 						<div class="agent-input-card">
 							<textarea class="agent-textarea" placeholder="${__('Type your financial question or query here...')}" id="agent-input-msg" maxlength="10000"></textarea>
 							<div class="agent-input-footer">
-								<div class="agent-input-footer-left">
-									<div class="agent-selector-container"></div>
-								</div>
+								<div class="agent-input-footer-left"></div>
 								<div class="agent-input-footer-right">
 									<div class="agent-char-counter">0 / 10000</div>
 									<button class="agent-send-btn" id="agent-send-trigger" title="${__('Send Message')}">
@@ -575,10 +602,6 @@ class AccountantAgentChat {
 		this.msg_box = this.layout.find('#agent-msg-box');
 		this.textarea = this.layout.find('#agent-input-msg');
 		this.popup_container = this.layout.find('.agent-clarification-popup');
-
-		// Initialize Agent Selector UI
-		this.agent_selector = new AgentSelector({ default_agent: 'ask' });
-		this.agent_selector.render(this.layout.find('.agent-selector-container'));
 
 		// Initialize File Upload Handler
 		this.file_upload_handler = new FileUploadHandler(this);
@@ -699,16 +722,25 @@ class AccountantAgentChat {
 			d.show();
 		});
 
-		this.textarea.on('input', () => {
+		this.auto_resize_textarea = () => {
+			if (!this.textarea || !this.textarea.length) return;
 			this.textarea.css('height', 'auto');
-			this.textarea.css('height', (this.textarea[0].scrollHeight) + 'px');
-			let length = this.textarea.val().length;
+			let scroll_h = this.textarea[0].scrollHeight || 46;
+			let new_height = Math.max(46, Math.min(scroll_h, 300));
+			this.textarea.css('height', new_height + 'px');
+			let length = (this.textarea.val() || '').length;
 			this.layout.find('.agent-char-counter').text(`${length} / 10000`);
+		};
+
+		this.textarea.on('input', () => {
+			this.auto_resize_textarea();
 		});
 
 		this.textarea.on('keydown', (e) => {
 			if (e.which === 13 && !e.shiftKey) {
 				e.preventDefault();
+				// While the manager is working the composer is closed and the
+				// button is the cancel control, so Enter has nothing to send.
 				let btn = this.layout.find('#agent-send-trigger');
 				if (!btn.hasClass('agent-cancel-btn')) {
 					this.message_handler.send_user_message();

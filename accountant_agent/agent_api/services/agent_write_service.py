@@ -47,6 +47,8 @@ from accountant_agent.agent_api.db.agent_write_repository import (
     cancel_document,
     commit_write_log,
     doctype_exists,
+    duplicate_was_confirmed,
+    find_committed_twin,
     find_write_log_by_key,
     get_doctype_meta,
     get_document_state,
@@ -1769,6 +1771,9 @@ _DEFAULT_MESSAGE_BY_CODE: dict[str, str] = {
     "DUPLICATE": "This entry has already been recorded.",
     "PERIOD_FROZEN": "The accounting period for this date is closed.",
     "VALIDATION_FAILED": "This entry was refused by your system's accounting rules.",
+    "POSSIBLE_DUPLICATE": "An identical document was recorded a short while ago, "
+                          "so this one was not recorded again. If a second copy "
+                          "is wanted, send the request again and approve it.",
     "WRITE_REJECTED": "This entry could not be recorded.",
 }
 
@@ -1849,6 +1854,57 @@ def _document_amount(doc: Any) -> Optional[float]:
 # ─── Writes ──────────────────────────────────────────────────────────────────
 
 
+def assert_not_an_unconfirmed_duplicate(
+    digest: str,
+    run_id: Optional[str],
+    doctype: str,
+    idempotency_key: str,
+    session_id: Optional[str],
+) -> None:
+    """Refuse — exactly once — a create identical to another run's recent write.
+
+    THE SCENARIO THE KEY CANNOT CATCH: a write lands, the response is lost,
+    the customer asks again in a new turn. The new turn has a new run id, so
+    the idempotency key is new and the replay protocol never fires; the
+    approved re-write would post a duplicate ledger entry.
+
+    THE SCENARIO THIS MUST NOT BREAK: a customer who truly wants two identical
+    documents. Deduplicating by content — folding the digest into the key —
+    would silently return the OLD document as if a new one had been created,
+    which is a worse lie than the duplicate. So the first cross-run twin is
+    refused with an explanation and a way forward; a re-send after that
+    warning is a decision and goes through (``duplicate_was_confirmed``).
+    Every additional copy costs one fresh confirmation, because each landed
+    copy becomes the newest twin.
+
+    The refusal is recorded like every other refused write, which is also what
+    arms the confirmation for the retry.
+    """
+    twin = find_committed_twin(digest, run_id)
+    if not twin:
+        return
+    if duplicate_was_confirmed(digest, twin.get("creation")):
+        return
+    message = _(
+        "This is identical to {0} {1}, recorded a short while ago from an "
+        "earlier request, so it has NOT been recorded again — the earlier one "
+        "may already cover it. If you do want a second identical document, "
+        "send the request again and approve the new proposal; it will then be "
+        "recorded."
+    ).format(twin.get("target_doctype") or doctype, twin.get("target_docname") or "")
+    record_failed_attempt(
+        idempotency_key=idempotency_key,
+        action="create",
+        target_doctype=doctype,
+        request_digest=digest,
+        run_id=run_id,
+        session_id=session_id,
+        error_code="POSSIBLE_DUPLICATE",
+        error_message=message,
+    )
+    raise WriteRejectedError(message, code="POSSIBLE_DUPLICATE")
+
+
 def create_document(
     payload: dict,
     idempotency_key: str,
@@ -1910,6 +1966,13 @@ def create_document(
         assert_run_caps_for_run(policy, run_id, 1, _payload_amount(payload))
 
     digest = _payload_digest(payload)
+    assert_not_an_unconfirmed_duplicate(
+        digest=digest,
+        run_id=run_id,
+        doctype=doctype,
+        idempotency_key=idempotency_key,
+        session_id=session_id,
+    )
     savepoint = next_savepoint_name(savepoint_ordinal)
 
     try:

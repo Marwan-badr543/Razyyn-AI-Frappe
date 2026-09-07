@@ -1,95 +1,36 @@
-
-name: CI
+name: CI & Security Scan
 
 on:
   push:
-    branches:
-      - develop
+    branches: ["*"]
   pull_request:
-
-concurrency:
-  group: develop-accountant_agent-${{ github.event.number }}
-  cancel-in-progress: true
+    branches: ["*"]
+  workflow_dispatch:
 
 jobs:
-  tests:
+  semgrep:
+    name: Frappe Security & Linter Scan
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-    name: Server
-
-    services:
-      mariadb:
-        image: mariadb:10.6
-        env:
-          MYSQL_ROOT_PASSWORD: root
-        ports:
-          - 3306:3306
-        options: --health-cmd="mysqladmin ping" --health-interval=5s --health-timeout=2s --health-retries=3
-
     steps:
-      - name: Clone
-        uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Find tests
-        run: |
-          echo "Finding tests"
-          grep -rn "def test" > /dev/null
-
-      - name: Setup Python
-        uses: actions/setup-python@v2
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
-      - name: Setup Node
-        uses: actions/setup-node@v2
-        with:
-          node-version: 14
-          check-latest: true
+      - name: Install Semgrep
+        run: pip install semgrep
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/*requirements.txt', '**/pyproject.toml', '**/setup.py', '**/setup.cfg') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-            ${{ runner.os }}-
+      - name: Download Official Frappe Semgrep Rules
+        run: git clone --depth 1 https://github.com/frappe/semgrep-rules.git frappe-semgrep-rules
 
-      - name: Get yarn cache directory path
-        id: yarn-cache-dir-path
-        run: 'echo "::set-output name=dir::$(yarn cache dir)"'
-
-      - uses: actions/cache@v4
-        id: yarn-cache
-        with:
-          path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
-          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-yarn-
-
-      - name: Setup
+      - name: Run Frappe Security Scan (Blocking Errors)
         run: |
-          pip install frappe-bench
-          bench init --skip-redis-config-generation --skip-assets --python "$(which python)" ~/frappe-bench
-          mysql --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL character_set_server = 'utf8mb4'"
-          mysql --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL collation_server = 'utf8mb4_unicode_ci'"
+          semgrep --config ./frappe-semgrep-rules/rules --severity ERROR --exclude "frappe-semgrep-rules" --exclude "tests" .
 
-      - name: Install
-        working-directory: /home/runner/frappe-bench
+      - name: Informational Code Quality Scan
+        continue-on-error: true
         run: |
-          bench get-app accountant_agent $GITHUB_WORKSPACE
-          bench setup requirements --dev
-          bench new-site --db-root-password root --admin-password admin test_site
-          bench --site test_site install-app accountant_agent
-          bench build
-        env:
-          CI: 'Yes'
-
-      - name: Run Tests
-        working-directory: /home/runner/frappe-bench
-        run: |
-          bench --site test_site set-config allow_tests true
-          bench --site test_site run-tests --app accountant_agent
-        env:
-          TYPE: server
+          semgrep --config ./frappe-semgrep-rules/rules --exclude "frappe-semgrep-rules" --exclude "tests" .

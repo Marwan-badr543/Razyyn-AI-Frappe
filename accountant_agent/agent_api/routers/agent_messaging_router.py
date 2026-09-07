@@ -107,7 +107,7 @@ def send_message(
 	destination: str | None = None,
 	subject: str | None = None,
 	body: str | None = None,
-	file_urls=None,
+	file_urls: list[str] | None = None,
 	idempotency_key: str | None = None,
 	approved_by: str | None = None,
 	run_id: str | None = None,
