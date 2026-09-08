@@ -9,6 +9,7 @@
   "api_key",
   "column_break_lpxe",
   "access_token",
+  "refresh_token",
   "section_break_ovmp",
   "custom_instructions",
   "api_key_hash",
@@ -27,6 +28,14 @@
    "fieldtype": "Password",
    "in_list_view": 1,
    "label": "Access Token",
+   "read_only": 1
+  },
+  {
+   "description": "Long-lived credential used only to renew the access token.",
+   "fieldname": "refresh_token",
+   "fieldtype": "Password",
+   "label": "Refresh Token",
+   "no_copy": 1,
    "read_only": 1
   },
   {

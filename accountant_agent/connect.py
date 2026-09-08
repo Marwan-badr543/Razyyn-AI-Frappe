@@ -210,15 +210,14 @@ def _platform_request(
     try:
         response = _send(headers)
         if response.status_code == 401:
-            refreshed = refresh_agent_token_on_server(access_token)
+            refreshed = refresh_agent_token_on_server(doc.email)
             if not refreshed:
-                save_agent_settings(doc.email, access_token="")
+                save_agent_settings(doc.email, access_token="", refresh_token="")
                 frappe.throw(
                     _("Your Accountant Agent session has expired. Please sign in "
                       "again from the chat page."),
                     frappe.AuthenticationError,
                 )
-            save_agent_settings(doc.email, access_token=refreshed)
             headers["Authorization"] = f"Bearer {refreshed}"
             response = _send(headers)
     except requests.exceptions.RequestException as exc:
