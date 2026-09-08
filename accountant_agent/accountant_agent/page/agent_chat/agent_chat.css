@@ -104,6 +104,12 @@
 
 	/* UI Constants */
 	--transition-hover: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+
+	/* Chat window frame. The page header reads --chat-gutter to line the brand
+	   mark up with the left edge of the chat card. */
+	--chat-frame-margin: 15px;
+	--chat-frame-padding: 10px;
+	--chat-gutter: calc(var(--chat-frame-margin) + var(--chat-frame-padding));
 }
 
 [data-theme="dark"] {
@@ -165,8 +171,8 @@
 	flex-direction: column;
 	height: calc(100vh - 165px);
 	max-width: 100%;
-	margin: 15px;
-	padding: 10px;
+	margin: var(--chat-frame-margin);
+	padding: var(--chat-frame-padding);
 	font-family: var(--chat-font);
 	box-sizing: border-box;
 }
@@ -1778,32 +1784,62 @@
 	margin-right: 0;
 }
 
-/* Blinking dot next to page title */
-.agent-title-dot {
-	display: inline-block;
-	width: 10px;
-	height: 10px;
-	border-radius: 50%;
-	background-color: var(--chat-primary, #10a37f);
-	margin-right: 8px;
-	animation: agent-title-blink 1.5s infinite ease-in-out;
-	vertical-align: middle;
+/* ── The brand lockup in the page title ─────────────────────────────────────
+ *
+ * The low-poly "R" is the first letter of the name, not an icon beside it: the
+ * title drops its leading "R" and the mark sits tight against what is left, so
+ * the two read as one word — "R" + "azyyn AI".
+ *
+ * The lockup starts at exactly the same left gutter as the chat window below
+ * it. Both offsets read `--chat-gutter`, derived from the chat frame's own
+ * margin and padding, so the header and the chat card cannot drift apart. The
+ * page head and the page body are sibling `.container` elements whose
+ * horizontal padding and margin this page already zeroes, so they share a left
+ * origin; the gutter is measured from there on both.
+ */
+#page-agent-chat .page-head .title-area,
+[data-page-route="agent-chat"] .page-head .title-area {
+	padding-left: var(--chat-gutter);
 }
 
-[dir="rtl"] .agent-title-dot {
+.agent-brand-mark {
+	display: inline-flex;
+	align-self: center;
+	flex-shrink: 0;
+	margin-right: 2px;
+	line-height: 0;
+}
+
+.agent-brand-mark-svg {
+	display: block;
+	height: 26px;
+	width: auto;
+}
+
+/* The lockup's trailing edge has to be the last letter of the name. Frappe
+   leaves a gap and an empty pill after every page title in case the page sets a
+   status; this one never does, and in a right-to-left desk that reserved space
+   would sit between the name and the gutter. The pill reappears by itself if a
+   status is ever set. */
+.page-title .title-area .agent-brand-lockup .title-text {
 	margin-right: 0;
-	margin-left: 8px;
 }
 
-@keyframes agent-title-blink {
-	0%, 100% {
-		opacity: 0.4;
-		transform: scale(0.9);
-	}
-	50% {
-		opacity: 1;
-		transform: scale(1.1);
-	}
+.agent-brand-lockup .indicator-pill:empty {
+	display: none;
+}
+
+/* In an Arabic desk the lockup moves to the right-hand gutter, but the name is
+   a Latin word and its letters must not be reordered: the mark stays at the
+   front of "azyyn AI" instead of being pushed to the far side of it. */
+[dir="rtl"] #page-agent-chat .page-head .title-area,
+[dir="rtl"] [data-page-route="agent-chat"] .page-head .title-area {
+	padding-left: 0;
+	padding-right: var(--chat-gutter);
+}
+
+[dir="rtl"] .agent-brand-lockup {
+	direction: ltr;
 }
 
 /* ── A question the customer can fold away ──────────────────────────────────

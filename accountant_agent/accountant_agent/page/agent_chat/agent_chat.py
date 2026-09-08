@@ -135,8 +135,15 @@ def register_agent_on_server(email: str, password: str, company_name: str, api_k
 		frappe.throw(_("Could not connect to Agent Server. Please make sure the server is running."))
 
 
-def login_agent_on_server(email: str, password: str) -> str:
-	"""Logs in to the agent server and returns the access token."""
+def login_agent_on_server(email: str, password: str) -> tuple:
+	"""Sign in to the agent server. Returns (access_token, refresh_token).
+
+	The platform issues two tokens: a short-lived access token that opens the
+	API, and a long-lived refresh token whose only use is renewing the first.
+	Both are stored, because the refresh endpoint now requires the refresh
+	token — presenting an expired access token no longer renews anything, which
+	is what stopped a leaked token from lasting forever.
+	"""
 	login_payload = {
 		"username": email,
 		"password": password
@@ -146,23 +153,50 @@ def login_agent_on_server(email: str, password: str) -> str:
 		if response.status_code != 200:
 			error_msg = response.json().get("detail", "Login failed. Check your email and password.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
-		
+
 		token_data = response.json()
-		return token_data.get("access_token")
+		return token_data.get("access_token"), token_data.get("refresh_token")
 	except requests.exceptions.RequestException as e:
 		frappe.log_error(f"Agent login request error: {str(e)}", "Accountant Agent Auth")
 		frappe.throw(_("Could not connect to Agent Server. Please make sure the server is running."))
 
 
-def refresh_agent_token_on_server(access_token: str) -> str:
-	"""Calls the agent server token refresh endpoint and returns the new access token."""
-	refresh_payload = {
-		"access_token": access_token
-	}
+def refresh_agent_token_on_server(email: str) -> Optional[str]:
+	"""Renew this account's access token and persist the rotated pair.
+
+	Takes the e-mail rather than a token because the caller should not have to
+	know which credential opens the refresh endpoint. It reads the stored
+	refresh token, exchanges it, saves both new tokens, and hands back the new
+	access token — or None, which every caller already treats as "the session
+	is over, ask the customer to sign in again".
+
+	The refresh token is single-use: the platform rotates it on every exchange,
+	so the new one must be saved or the next renewal fails.
+
+	An account connected before refresh tokens existed has none stored. It gets
+	None here and one re-login, which is the intended cost of retiring
+	credentials that never expired.
+	"""
+	doc = get_agent_settings_doc(email)
+	refresh_token = doc.get_password("refresh_token", raise_exception=False) if doc else None
+	if not refresh_token:
+		return None
+
 	try:
-		response = requests.post(f"{get_agent_server_url()}/auth/refresh", json=refresh_payload, timeout=15)
+		response = requests.post(
+			f"{get_agent_server_url()}/auth/refresh",
+			json={"refresh_token": refresh_token},
+			timeout=15,
+		)
 		if response.status_code == 200:
-			return response.json().get("access_token")
+			data = response.json()
+			new_access = data.get("access_token")
+			new_refresh = data.get("refresh_token")
+			if new_access:
+				save_agent_settings(
+					email, access_token=new_access, refresh_token=new_refresh or "",
+				)
+				return new_access
 	except Exception as e:
 		frappe.log_error(f"Agent token refresh request error: {str(e)}", "Accountant Agent Refresh")
 	return None
@@ -171,7 +205,10 @@ def refresh_agent_token_on_server(access_token: str) -> str:
 # ---------------- Database Connection Helpers ----------------
 
 def save_agent_settings(
-	email: str, api_key: Optional[str] = None, access_token: Optional[str] = None
+	email: str,
+	api_key: Optional[str] = None,
+	access_token: Optional[str] = None,
+	refresh_token: Optional[str] = None,
 ) -> None:
 	"""Create or update the caller's Agent Settings record.
 
@@ -184,6 +221,8 @@ def save_agent_settings(
 		if doc:
 			if access_token is not None:
 				doc.access_token = access_token
+			if refresh_token is not None:
+				doc.refresh_token = refresh_token
 			if api_key is not None:
 				doc.api_key = api_key
 			doc.save(ignore_permissions=True)
@@ -195,6 +234,7 @@ def save_agent_settings(
 				"email": email,
 				"api_key": api_key,
 				"access_token": access_token or "",
+				"refresh_token": refresh_token or "",
 			}).insert(ignore_permissions=True)
 		frappe.db.commit()
 	except (frappe.ValidationError, frappe.DuplicateEntryError, frappe.PermissionError):
@@ -600,19 +640,19 @@ def authenticate_agent(mode: str, email: str, password: str, company_name: str |
 				frappe.db.commit()
 			raise e
 		
-		# Automatically login to acquire token
-		access_token = login_agent_on_server(email, password)
-		save_agent_settings(email, access_token=access_token)
+		# Automatically login to acquire tokens
+		access_token, refresh_token = login_agent_on_server(email, password)
+		save_agent_settings(email, access_token=access_token, refresh_token=refresh_token)
 		
 	elif mode == "login":
 		# Authenticate with agent server
-		access_token = login_agent_on_server(email, password)
-		
+		access_token, refresh_token = login_agent_on_server(email, password)
+
 		# Check if local record exists (must exist as requested by user)
 		if not get_agent_settings_doc(email):
 			frappe.throw(_("Agent settings not found for this email. Please sign up first."))
-			
-		save_agent_settings(email, access_token=access_token)
+
+		save_agent_settings(email, access_token=access_token, refresh_token=refresh_token)
 		
 	else:
 		frappe.throw(_("Invalid mode specified."))
@@ -825,9 +865,8 @@ def process_agent_message_background(
 		)
 
 		if response.status_code == 401:
-			new_access_token = refresh_agent_token_on_server(access_token)
+			new_access_token = refresh_agent_token_on_server(agent_email)
 			if new_access_token:
-				save_agent_settings(agent_email, access_token=new_access_token)
 				headers["Authorization"] = f"Bearer {new_access_token}"
 				
 				# Re-open/reset files
@@ -843,7 +882,7 @@ def process_agent_message_background(
 					timeout=AGENT_STREAM_TIMEOUT,
 				)
 			else:
-				save_agent_settings(agent_email, access_token="")
+				save_agent_settings(agent_email, access_token="", refresh_token="")
 				raise Exception("Session expired. Please reconnect.")
 
 		if response.status_code == 499:
@@ -1309,14 +1348,13 @@ def cancel_agent(session_id: str, agent_email: str) -> dict:
 		
 		# Handle expired token (401)
 		if response.status_code == 401:
-			new_access_token = refresh_agent_token_on_server(access_token)
+			new_access_token = refresh_agent_token_on_server(agent_email)
 			if new_access_token:
-				save_agent_settings(agent_email, access_token=new_access_token)
 				headers["Authorization"] = f"Bearer {new_access_token}"
 				response = requests.post(f"{get_agent_server_url()}/agent/cancel", json=payload, headers=headers, timeout=15)
 			else:
 				# Clear invalid token to force re-login
-				save_agent_settings(agent_email, access_token="")
+				save_agent_settings(agent_email, access_token="", refresh_token="")
 				frappe.throw(_("Session expired. Please reconnect."))
 				
 		if response.status_code != 200:
@@ -1361,9 +1399,8 @@ def get_run_state(session_id: str, agent_email: str) -> dict:
 			timeout=15,
 		)
 		if response.status_code == 401:
-			new_access_token = refresh_agent_token_on_server(access_token)
+			new_access_token = refresh_agent_token_on_server(agent_email)
 			if new_access_token:
-				save_agent_settings(agent_email, access_token=new_access_token)
 				headers["Authorization"] = f"Bearer {new_access_token}"
 				response = requests.get(
 					f"{get_agent_server_url()}/agent/chat/state",
