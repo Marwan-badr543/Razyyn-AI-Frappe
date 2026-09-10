@@ -39,44 +39,14 @@ import requests
 from frappe import _
 from frappe.model.document import Document
 
-#: Where the platform's agent API lives. Read from ``site_config.json`` so a
-#: deployment that does not run the agent server on the ERP host — which is
-#: every real deployment — can point at it without editing source.
-_DEFAULT_AGENT_SERVER_URL: str = "http://127.0.0.1:8010"
+# The service address, and every other setting the app ships with, live in
+# `accountant_agent/agent_config.json` — a file version control actually
+# carries. It used to be read from a `.env` file, which is excluded from git, so
+# nobody who installed this app was ever given one. See agent_config.py for the
+# whole reasoning and for how a single site overrides a value.
+from accountant_agent.agent_config import get_agent_server_url, get_ocr_languages
+
 _USAGE_REQUEST_TIMEOUT_SECONDS: int = 10
-
-
-def _load_env() -> None:
-    try:
-        import os
-        app_root = os.path.abspath(os.path.join(frappe.get_app_path("accountant_agent"), ".."))
-        env_path = os.path.join(app_root, ".env")
-        if os.path.exists(env_path):
-            with open(env_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    if "=" in line:
-                        key, val = line.split("=", 1)
-                        key = key.strip()
-                        val = val.strip()
-                        if val.startswith(('"', "'")) and val.endswith(val[0]):
-                            val = val[1:-1]
-                        os.environ.setdefault(key, val)
-    except Exception:
-        pass
-
-
-def get_agent_server_url() -> str:
-    """Base URL of the platform's agent API for this site."""
-    import os
-    _load_env()
-    return (
-        frappe.conf.get("accountant_agent_server_url")
-        or os.environ.get("ACCOUNTANT_AGENT_SERVER_URL")
-        or _DEFAULT_AGENT_SERVER_URL
-    ).rstrip("/")
 
 
 def hash_api_key(api_key: str) -> str:
@@ -194,7 +164,16 @@ def get_user_usage(email: str) -> dict:
     if not doc:
         return zero
 
-    access_token = doc.get_password("access_token", raise_exception=False)
+    # Through the chat page's token helper, which renews a token that is about
+    # to expire before it is used. Reading the stored token directly meant this
+    # panel quietly reported nothing whenever the token happened to be old —
+    # so a customer whose plan was nearly spent was shown 0% and had no warning
+    # before their next request was refused.
+    from accountant_agent.accountant_agent.page.agent_chat.agent_chat import (
+        get_agent_access_token, refresh_agent_token_on_server,
+    )
+
+    access_token = get_agent_access_token(email)
     user_id: Optional[str] = None
     if access_token:
         user_id = decode_jwt_payload(access_token).get("sub")
@@ -206,16 +185,18 @@ def get_user_usage(email: str) -> dict:
     if not user_id:
         return zero
 
-    headers: dict = {}
-    if access_token:
-        headers["Authorization"] = f"Bearer {access_token}"
-
-    try:
-        response = requests.get(
+    def _ask(token: Optional[str]) -> requests.Response:
+        headers: dict = {"Authorization": f"Bearer {token}"} if token else {}
+        return requests.get(
             f"{get_agent_server_url()}/users/{user_id}/usage",
             headers=headers,
             timeout=_USAGE_REQUEST_TIMEOUT_SECONDS,
         )
+
+    try:
+        response = _ask(access_token)
+        if response.status_code == 401:
+            response = _ask(refresh_agent_token_on_server(email))
         if response.status_code != 200:
             return zero
 

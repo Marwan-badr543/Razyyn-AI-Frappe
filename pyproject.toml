@@ -14,7 +14,12 @@ dependencies = [
     "pandas",
     "python-pptx",
     "pillow",
-    "requests"
+    "requests",
+    # Reading the words out of photographed and scanned documents. Both need
+    # system packages the Python wheels do not carry: tesseract-ocr with the
+    # eng and ara language data, and poppler-utils.
+    "pytesseract",
+    "pdf2image"
 ]
 
 [build-system]

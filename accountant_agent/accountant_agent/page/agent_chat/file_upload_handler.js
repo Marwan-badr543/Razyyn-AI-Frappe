@@ -22,49 +22,88 @@ class FileUploadHandler {
 		// Pending attachments array: [{ id, name, url, size, is_image, is_excel, file }]
 		this.pending_attachments = [];
 
-		// Processing lock
-		this.is_processing = false;
+		// Files chosen but not finished uploading, as { size, is_excel }.
+		//
+		// They count towards the limits from the moment they are chosen. Without
+		// this, dropping ten files and then ten more while the first ten were
+		// still uploading measured the second batch against an almost empty
+		// basket, and the whole lot sailed past a limit the server would then
+		// apply for real.
+		this.in_flight = [];
 
-		// Every document, data and image type an accountant legitimately
-		// sends, and nothing that carries executable code.
+		// Resolves when nothing is uploading, so sending a message can wait for
+		// the attachments instead of leaving half of them behind.
+		this.upload_run = Promise.resolve();
+
+		// How many uploads run at once. Twenty files one after another is a long
+		// wait for no reason; twenty at once is a burst the site does not need.
+		this.UPLOAD_CONCURRENCY = 4;
+
+		// The most files one message may carry, until the server says otherwise.
+		this.MAX_FILES = 20;
+
+		// Object URLs handed to preview thumbnails, released when the preview is.
+		this.thumbnail_urls = [];
+
+		// SCAN & EXTRACT DATA — the customer's own decision, remembered.
 		//
-		// This list MUST stay in step with ALLOWED_ACCOUNTANT_EXTENSIONS in
-		// agent_chat.py. That is the one that actually protects the server;
-		// this one exists so the file picker filters sensibly and a refusal
-		// happens before a 100 MB upload rather than after it.
+		// Reading the words out of a picture is right for a photographed
+		// invoice and wrong for a photograph the agent is meant to look at, and
+		// only the person attaching the file knows which one this is.
 		//
-		// Deliberately absent: source and script files, executables, and
-		// macro-enabled Office formats (.xlsm .xlsb .docm .pptm), which are
-		// spreadsheets that run code when opened. Also absent is markup a
-		// browser executes (.html .svg), because rendering is execution.
+		// IT STARTS ON. The overwhelming majority of pictures sent to an
+		// accounting agent are documents, and a switch that starts off means
+		// the first thing a new customer does — photograph an invoice, send it,
+		// watch nothing be read — is the exact failure this feature exists to
+		// prevent. Turning it off is one click and is remembered from then on,
+		// which is the right way round: the rare case pays the click.
+		this.scan_enabled = localStorage.getItem('agent_chat_scan_enabled') !== '0';
+
+		// THE RULES COME FROM THE SERVER, NOT FROM HERE.
+		//
+		// This file used to carry its own list of accepted file types, and it
+		// had drifted from the one the server enforces: the picker offered
+		// legacy Office documents, mail files and .zip archives that the upload
+		// then refused. A customer chose a file, watched it upload, and was told
+		// afterwards that it was not allowed — which is the one moment a file
+		// picker exists to prevent.
+		//
+		// `get_upload_rules` on the server publishes the real lists and limits,
+		// and `init` fetches them once when the page opens. What is written
+		// below is only what the page uses before that answer arrives, and if
+		// the call ever fails: a conservative set that is certain to be
+		// accepted, so a stale copy can refuse a file but never promise one.
 		this.ALLOWED_EXTENSIONS = new Set([
-			// Portable documents and word processing
-			'.pdf', '.doc', '.docx', '.odt', '.rtf',
-			// Spreadsheets, macro-free
-			'.xls', '.xlsx', '.ods',
-			// Presentations
-			'.ppt', '.pptx', '.odp',
-			// Plain text, notes and structured data
-			'.txt', '.md', '.markdown', '.rst', '.log', '.csv', '.tsv', '.psv',
-			'.json', '.jsonl', '.ndjson', '.yaml', '.yml', '.toml', '.ini',
-			'.cfg', '.conf', '.xml',
-			// Accounting and banking interchange formats
-			'.ofx', '.qfx', '.qbo', '.qif', '.mt940', '.sta', '.camt', '.aba',
-			'.bai', '.bai2', '.edi', '.x12', '.iif', '.xbrl', '.ubl', '.dat',
-			// Correspondence attached as evidence
-			'.eml', '.msg', '.mbox', '.ics', '.vcf',
-			// Images and scans
-			'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff',
-			'.heic', '.heif', '.avif',
-			// Unpacked server-side; only permitted types inside survive.
-			'.zip'
+			'.pdf', '.docx', '.odt', '.xlsx', '.ods', '.pptx', '.odp',
+			'.txt', '.md', '.csv', '.tsv', '.json', '.xml',
+			'.png', '.jpg', '.jpeg', '.gif', '.webp'
 		]);
 
 		this.EXCEL_EXTENSIONS = new Set(['.xlsx', '.xls', '.ods']);
 		this.IMAGE_EXTENSIONS = new Set([
-			'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff',
-			'.heic', '.heif', '.avif'
+			'.png', '.jpg', '.jpeg', '.gif', '.webp'
 		]);
+	}
+
+	/** Replace the built-in fallbacks with what the server actually enforces. */
+	_load_rules_from_server() {
+		return frappe.call({
+			method: 'accountant_agent.accountant_agent.page.agent_chat.agent_chat.get_upload_rules'
+		}).then((response) => {
+			let rules = response && response.message;
+			if (!rules || !rules.extensions || !rules.extensions.length) return;
+
+			this.ALLOWED_EXTENSIONS = new Set(rules.extensions);
+			this.IMAGE_EXTENSIONS = new Set(rules.image_extensions || []);
+			this.EXCEL_EXTENSIONS = new Set(rules.excel_extensions || []);
+			if (rules.max_files) this.MAX_FILES = rules.max_files;
+			if (this.$attach_btn) {
+				this.$attach_btn.attr('title',
+					__('Attach files or images (up to {0})', [this.MAX_FILES]));
+			}
+		}).catch(() => {
+			// The fallbacks above stay in force; nothing else to do.
+		});
 	}
 
 	// ─── Initialization ────────────────────────────────────────────────────
@@ -73,14 +112,16 @@ class FileUploadHandler {
 		this.$textarea = $textarea;
 
 		this._render_attach_button();
+		this._render_scan_button();
 		this._render_preview_area();
 		this._bind_events();
+		this._load_rules_from_server();
 	}
 
 	// ─── UI Rendering ──────────────────────────────────────────────────────
 	_render_attach_button() {
 		this.$attach_btn = $(`
-			<button class="agent-attach-btn" type="button" title="${__('Attach files or images (up to 5 files)')}">
+			<button class="agent-attach-btn" type="button" title="${__('Attach files or images (up to {0})', [this.MAX_FILES])}">
 				<svg viewBox="0 0 24 24" width="20" height="20">
 					<path d="M16.5 6v11.5a4 4 0 0 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 0 1-2 0V6h-1v9.5a2 2 0 0 0 4 0V5a3.5 3.5 0 0 0-7 0v12.5a5 5 0 0 0 10 0V6h-1z" fill="currentColor"/>
 				</svg>
@@ -94,6 +135,48 @@ class FileUploadHandler {
 		if ($flex_row.length) {
 			$flex_row.prepend(this.$attach_btn);
 		}
+	}
+
+	_render_scan_button() {
+		this.$scan_btn = $(`
+			<button class="agent-scan-btn" type="button">
+				<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+					<path d="M3 7V4h3M21 7V4h-3M3 17v3h3M21 17v3h-3M3 12h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+				</svg>
+				<span class="agent-scan-label">${__('Scan & Extract Data')}</span>
+			</button>
+		`);
+
+		this.$scan_btn.on('click', () => this._toggle_scan());
+
+		// Beside the paperclip, because it is about the files that button
+		// attaches: a switch kept anywhere else is a switch nobody connects to
+		// what it changes.
+		let $flex_row = this.$container.find('.agent-input-footer-left').first();
+		if (this.$attach_btn && this.$attach_btn.parent().length) {
+			this.$attach_btn.after(this.$scan_btn);
+		} else if ($flex_row.length) {
+			$flex_row.append(this.$scan_btn);
+		}
+		this._paint_scan_button();
+	}
+
+	_paint_scan_button() {
+		if (!this.$scan_btn) return;
+		this.$scan_btn.toggleClass('active', !!this.scan_enabled);
+		this.$scan_btn.attr('aria-pressed', this.scan_enabled ? 'true' : 'false');
+		// One short line each way, in the words of somebody who has never heard
+		// of scanning software: what it will do to the file I just attached.
+		this.$scan_btn.attr('title', this.scan_enabled
+			? __('On: reads the words in your photos and scans. Click to turn off.')
+			: __('Off: photos are sent as pictures. Click to read their words.'));
+	}
+
+	/** Turn reading on or off. It is remembered, and it is read at send. */
+	_toggle_scan() {
+		this.scan_enabled = !this.scan_enabled;
+		localStorage.setItem('agent_chat_scan_enabled', this.scan_enabled ? '1' : '0');
+		this._paint_scan_button();
 	}
 
 	_render_preview_area() {
@@ -115,7 +198,6 @@ class FileUploadHandler {
 	// ─── Event Bindings ────────────────────────────────────────────────────
 	_bind_events() {
 		this.$attach_btn.on('click', () => {
-			if (this.is_processing) return;
 			this._open_file_picker();
 		});
 
@@ -193,7 +275,7 @@ class FileUploadHandler {
 	 */
 	_validate_batch(incoming_files) {
 		let rules = {
-			max_files: 8,
+			max_files: this.MAX_FILES,
 			max_per_file_mb: 40,
 			max_non_excel_total_mb: 40,
 			max_excel_total_mb: 40,
@@ -202,11 +284,11 @@ class FileUploadHandler {
 		let agent_name = __('Razyyn AI');
 
 		// 1. Total file count
-		let total_count = this.pending_attachments.length + incoming_files.length;
-		if (total_count > rules.max_files) {
+		let attached = this.pending_attachments.length + this.in_flight.length;
+		if ((attached + incoming_files.length) > rules.max_files) {
 			frappe.show_alert({
 				message: __('Maximum {0} files allowed for {1}. You currently have {2} attached and tried to add {3}.',
-					[rules.max_files, agent_name, this.pending_attachments.length, incoming_files.length]),
+					[rules.max_files, agent_name, attached, incoming_files.length]),
 				indicator: 'orange'
 			}, 7);
 			return false;
@@ -250,7 +332,7 @@ class FileUploadHandler {
 		// Aggregate budgets, tracked separately for Excel and non-Excel.
 		let current_non_excel = 0;
 		let current_excel = 0;
-		this.pending_attachments.forEach(att => {
+		this.pending_attachments.concat(this.in_flight).forEach(att => {
 			if (att.is_excel) current_excel += att.size;
 			else current_non_excel += att.size;
 		});
@@ -289,23 +371,60 @@ class FileUploadHandler {
 	}
 
 	// ─── File Handling Pipeline ────────────────────────────────────────────
+
+	/**
+	 * Take a batch of chosen files, upload them, and keep the basket honest.
+	 *
+	 * A batch that arrives while another is still uploading is ADDED, not
+	 * discarded. The previous version returned silently in that case, so a
+	 * customer dropping a second handful of receipts watched them vanish with
+	 * no message at all — and the more files there are, the longer the window
+	 * in which that happens.
+	 */
 	async _handle_files(file_list) {
-		if (this.is_processing) return;
-
 		let files_array = Array.from(file_list);
+		if (!files_array.length) return;
 
-		// Validate batch rules first
 		if (!this._validate_batch(files_array)) {
 			return;
 		}
 
-		for (let file of files_array) {
-			await this._process_and_upload(file);
-		}
+		let reservations = files_array.map(file => ({
+			size: file.size,
+			is_excel: this._is_excel(file.name)
+		}));
+		this.in_flight.push(...reservations);
+
+		let batch = this._upload_all(files_array).finally(() => {
+			reservations.forEach(reservation => {
+				let at = this.in_flight.indexOf(reservation);
+				if (at > -1) this.in_flight.splice(at, 1);
+			});
+		});
+
+		// Chained so `wait_for_uploads` covers every batch still running.
+		this.upload_run = this.upload_run.then(() => batch).catch(() => {});
+		await batch;
+	}
+
+	/** Upload a batch a few at a time rather than one after another. */
+	_upload_all(files_array) {
+		let next = 0;
+		let worker = async () => {
+			while (next < files_array.length) {
+				await this._process_and_upload(files_array[next++]);
+			}
+		};
+		let lanes = Math.min(this.UPLOAD_CONCURRENCY, files_array.length);
+		return Promise.all(Array.from({ length: lanes }, worker));
+	}
+
+	/** Resolves once every chosen file has finished uploading. */
+	async wait_for_uploads() {
+		await this.upload_run;
 	}
 
 	async _process_and_upload(file) {
-		this.is_processing = true;
 		let is_img = this._is_image(file.name);
 		let is_exc = this._is_excel(file.name);
 		let preview_id = this._add_preview_item(file.name, is_img ? 'image' : 'file', 'uploading', file);
@@ -313,8 +432,13 @@ class FileUploadHandler {
 		try {
 			let upload_file = file;
 
-			// If image, compress client-side first
-			if (is_img) {
+			// If image, compress client-side first.
+			//
+			// NOT WHEN THE WORDS ARE GOING TO BE READ. Shrinking a photograph
+			// to 1920 pixels and re-encoding it as a JPEG throws away exactly
+			// the detail a reader needs: the difference between an 8 and a 3 in
+			// a total is a few pixels, and they are the first thing to go.
+			if (is_img && !this.scan_enabled) {
 				try {
 					let compressed_blob = await this._compress_image_client(file);
 					upload_file = new File([compressed_blob], file.name, { type: 'image/jpeg' });
@@ -338,6 +462,7 @@ class FileUploadHandler {
 
 			this.pending_attachments.push(item);
 			this._update_preview_item(preview_id, 'success');
+
 		} catch (err) {
 			console.error('File upload failed:', err);
 			this._update_preview_item(preview_id, 'error');
@@ -345,8 +470,6 @@ class FileUploadHandler {
 				message: __(`Failed to upload "${file.name}": ${err.message || 'Unknown error'}`),
 				indicator: 'red'
 			}, 7);
-		} finally {
-			this.is_processing = false;
 		}
 	}
 
@@ -440,7 +563,11 @@ class FileUploadHandler {
 
 		let icon_html;
 		if (type === 'image' && file) {
+			// Released in _release_thumbnails: the browser holds the whole image
+			// alive behind this URL, and twenty photographs of invoices is tens
+			// of megabytes kept for a preview the size of a stamp.
 			let thumb_url = URL.createObjectURL(file);
+			this.thumbnail_urls.push(thumb_url);
 			icon_html = `<img src="${thumb_url}" class="agent-preview-thumb" alt="${filename}" />`;
 		} else {
 			icon_html = `<span class="agent-preview-icon">${this._get_file_icon(filename)}</span>`;
@@ -522,8 +649,21 @@ class FileUploadHandler {
 
 	clear_attachments() {
 		this.pending_attachments = [];
+		this._release_thumbnails();
 		this.$preview_area.find('.agent-upload-preview-items').empty();
 		this.$preview_area.hide();
+	}
+
+	_release_thumbnails() {
+		this.thumbnail_urls.forEach(url => {
+			try { URL.revokeObjectURL(url); } catch (e) { /* already released */ }
+		});
+		this.thumbnail_urls = [];
+	}
+
+	/** True while any chosen file is still uploading. */
+	has_pending_uploads() {
+		return this.in_flight.length > 0;
 	}
 
 	_get_file_icon(filename) {

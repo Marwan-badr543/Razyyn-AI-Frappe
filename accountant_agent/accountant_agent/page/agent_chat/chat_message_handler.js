@@ -77,6 +77,24 @@ class ChatMessageHandler {
 		if (!session_id) return;
 
 		let message = this.chat.textarea.val();
+
+		// Wait for anything still uploading before reading the basket.
+		//
+		// Pressing Enter while files were still going up used to send only the
+		// ones that happened to have finished, and the rest were dropped without
+		// a word. With twenty files allowed that stopped being a rare race and
+		// became the normal case.
+		if (this.chat.file_upload_handler && this.chat.file_upload_handler.has_pending_uploads()) {
+			frappe.show_alert({ message: __('Finishing your uploads…'), indicator: 'blue' }, 3);
+			await this.chat.file_upload_handler.wait_for_uploads();
+		}
+
+		// NOTHING WAITS FOR THE READING HERE. The message goes now, and the
+		// worker that runs it reads the documents first and says how far it has
+		// got as it does. Holding the send button until a ten-page scan had
+		// been read left the customer looking at their own typing for two
+		// minutes with nothing to press.
+
 		let has_attachments = this.chat.file_upload_handler && this.chat.file_upload_handler.has_attachments();
 
 		if ((!message || message.trim() === '') && !has_attachments) return;
@@ -88,6 +106,9 @@ class ChatMessageHandler {
 
 		let file_urls = null;
 		let attachment_markers = '';
+		// The switch as it stands NOW decides what travels — not whether a
+		// reading happens to have been done earlier.
+		let scan = !!(this.chat.file_upload_handler && this.chat.file_upload_handler.scan_enabled);
 
 		if (has_attachments) {
 			file_urls = this.chat.file_upload_handler.get_file_urls();
@@ -104,10 +125,10 @@ class ChatMessageHandler {
 		}
 
 		let full_message = attachment_markers + (message || '');
-		await this.send_chat_message(full_message.trim(), file_urls);
+		await this.send_chat_message(full_message.trim(), file_urls, scan);
 	}
 
-	async send_chat_message(message, file_urls = null) {
+	async send_chat_message(message, file_urls = null, scan = false) {
 		let session_id = this.chat.session_manager.session_id;
 		if (!session_id) return;
 
@@ -182,7 +203,8 @@ class ChatMessageHandler {
 					session_id: active_session_id,
 					agent_email: agent_email,
 					agent_type: agent_type,
-					file_urls: file_urls ? JSON.stringify(file_urls) : null
+					file_urls: file_urls ? JSON.stringify(file_urls) : null,
+					scan: scan ? 1 : 0
 				}
 			);
 

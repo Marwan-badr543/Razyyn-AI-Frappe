@@ -2087,3 +2087,103 @@
 [dir="rtl"] .agent-todo-detail {
 	padding: 8px 38px 10px 12px;
 }
+
+/* ─── Scan & Extract Data ──────────────────────────────────────────────────
+ *
+ * A switch, not a command: it stays lit while it is on, because what it does
+ * applies to the next file the customer attaches as much as to this one. The
+ * lit state has to survive a dark theme and a light one, so it borrows the
+ * chat's own accent rather than naming a colour.
+ */
+
+.agent-scan-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	height: 32px;
+	padding: 0 10px;
+	border: 1px solid var(--chat-border);
+	border-radius: 16px;
+	background: transparent;
+	color: var(--chat-text-muted);
+	font-size: 12px;
+	font-weight: 500;
+	line-height: 1;
+	cursor: pointer;
+	white-space: nowrap;
+	transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.agent-scan-btn:hover {
+	background-color: var(--chat-border);
+	color: var(--chat-primary);
+}
+
+.agent-scan-btn.active {
+	border-color: var(--chat-primary);
+	color: var(--chat-primary);
+	background-color: var(--color-accent-glow, rgba(0, 123, 255, 0.08));
+}
+
+.agent-scan-btn svg {
+	flex-shrink: 0;
+}
+
+/* Room is tight on a phone; the icon alone still reads as the switch. */
+@media (max-width: 560px) {
+	.agent-scan-label {
+		display: none;
+	}
+	.agent-scan-btn {
+		padding: 0 8px;
+	}
+}
+
+/* ─── Reading your documents ───────────────────────────────────────────────
+ *
+ * Shown inside the answer's own bubble while the worker reads the message's
+ * attachments, and removed the moment it starts answering. Three dots cannot
+ * tell "working" from "stopped"; a bar that moves can.
+ */
+
+.agent-reading {
+	min-width: 260px;
+	max-width: 420px;
+	margin-bottom: 8px;
+}
+
+.agent-reading-line {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 10px;
+	margin-bottom: 6px;
+	font-size: 12px;
+	color: var(--chat-text-muted);
+}
+
+.agent-reading-what {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.agent-reading-count {
+	flex-shrink: 0;
+	font-variant-numeric: tabular-nums;
+}
+
+.agent-reading-track {
+	height: 4px;
+	border-radius: 2px;
+	overflow: hidden;
+	background-color: var(--chat-border);
+}
+
+.agent-reading-fill {
+	width: 0;
+	height: 100%;
+	border-radius: 2px;
+	background-color: var(--chat-primary);
+	transition: width 0.35s ease;
+}
