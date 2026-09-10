@@ -893,12 +893,18 @@ def process_agent_message_background(
 					# with every pipeline rename — and when it falls behind it
 					# does not fail, it quietly captions every step
 					# "Processing...". The node name still travels for logging.
+					#
+					# `agent` is which desk this node belongs to — stream_adapter.py
+					# stamps it onto every event for every desk, named or auto-
+					# routed. Without it here, a run that changed desks mid-way
+					# (multi-agent auto) looked like one desk doing everything.
 					frappe.publish_realtime(
 						event="agent_node_start",
 						message={
 							"session_id": session_id,
 							"node": data_json.get("node", ""),
 							"label": data_json.get("label", ""),
+							"agent": data_json.get("agent", ""),
 						},
 						user=user,
 					)
@@ -910,6 +916,57 @@ def process_agent_message_background(
 							"tool": data_json.get("tool", ""),
 							"label": data_json.get("label", ""),
 							"input": data_json.get("input", {}),
+							"agent": data_json.get("agent", ""),
+						},
+						user=user,
+					)
+				elif current_event == "multi_agent_start":
+					# Fires once, before any sub-agent runs, with the whole
+					# lineup an "auto" classification chained together. This is
+					# the plan a multi-desk run is executing — the client can
+					# show it up front instead of only ever seeing one step at
+					# a time with no sense of how many are coming.
+					frappe.publish_realtime(
+						event="agent_multi_start",
+						message={
+							"session_id": session_id,
+							"agents": data_json.get("agents", []),
+							"total": data_json.get("total", 0),
+						},
+						user=user,
+					)
+				elif current_event == "agent_start":
+					frappe.publish_realtime(
+						event="agent_subagent_start",
+						message={
+							"session_id": session_id,
+							"agent": data_json.get("agent", ""),
+							"index": data_json.get("index", 0),
+							"total": data_json.get("total", 0),
+						},
+						user=user,
+					)
+				elif current_event == "agent_complete":
+					frappe.publish_realtime(
+						event="agent_subagent_complete",
+						message={
+							"session_id": session_id,
+							"agent": data_json.get("agent", ""),
+							"index": data_json.get("index", 0),
+							"total": data_json.get("total", 0),
+						},
+						user=user,
+					)
+				elif current_event == "compilation_start":
+					# Every sub-agent has answered; this is the master desk
+					# writing the one reply out of all of them. A customer
+					# watching the step list stall here without this would read
+					# it as a hang right after the last desk finished.
+					frappe.publish_realtime(
+						event="agent_compilation_start",
+						message={
+							"session_id": session_id,
+							"agents": data_json.get("agents", []),
 						},
 						user=user,
 					)
@@ -938,7 +995,7 @@ def process_agent_message_background(
 
 					frappe.publish_realtime(
 						event="agent_message_done",
-						message={"session_id": session_id, "response": spoken},
+						message={"session_id": session_id, "response": spoken, "agent": data_json.get("agent", "")},
 						user=user,
 					)
 
@@ -1090,7 +1147,12 @@ def _collapsible_question(spoken: str, questions: list, answer: str = "") -> str
 	if len(asked) > 1:
 		headline = _("{0} (and {1} more)").format(headline, len(asked) - 1)
 
-	body = "\n".join(f"{index}. {question}" for index, question in enumerate(asked[1:], 2))
+	# `question` is LLM-authored text (asked[1:] comes straight from the
+	# clarification payload), so it gets the same escape() treatment as
+	# `headline` (asked[0]) and the answer below — unescaped it is a stored
+	# XSS: this string is persisted verbatim into Agent Chat History.content
+	# and later rendered back through parse_markdown -> .html().
+	body = "\n".join(f"{index}. {escape(question)}" for index, question in enumerate(asked[1:], 2))
 
 	said = (answer or "").strip()
 	if said:

@@ -175,6 +175,7 @@ _DENIED_COLUMN_PATTERNS: list[re.Pattern] = [
 		r"\bencryption_key\b",
 		r"\breset_password_key\b",
 		r"\bsocial_login_userid\b",
+		r"\bapi_key\b",
 	]
 ]
 
