@@ -133,24 +133,52 @@ frappe.pages['agent-chat'].on_page_load = function (wrapper) {
 							plotColor: '#10a37f'
 						}
 					},
-					securityLevel: 'loose'
+					// 'strict' (the marked/mermaid default) HTML-escapes text
+					// inside diagram labels instead of rendering it, closing
+					// the XSS path a diagram label built from LLM output would
+					// otherwise open. No code in this app relies on mermaid's
+					// loose-only click-bindings, so nothing here depends on
+					// 'loose'.
+					securityLevel: 'strict'
 				});
 			}
 		};
 		document.head.appendChild(script);
 	}
-	
-	// Dynamically load Chart.js from CDN
+
+	// Dynamically load Chart.js from CDN. Pinned version + Subresource
+	// Integrity so a compromised or MITM'd CDN response can't silently swap
+	// in different code.
 	if (!window.Chart) {
 		let script = document.createElement('script');
 		script.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js';
+		script.integrity = 'sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG';
+		script.crossOrigin = 'anonymous';
 		document.head.appendChild(script);
 	}
 
-	// Dynamically load marked.js from CDN
+	// Dynamically load DOMPurify from CDN before marked.js. All markdown/HTML
+	// rendered from AI responses (chat_ui_manager.js parse_markdown) is piped
+	// through DOMPurify.sanitize() before it ever reaches a raw .html() call,
+	// so DOMPurify must be available before any message is rendered.
+	if (!window.DOMPurify) {
+		let script = document.createElement('script');
+		script.src = 'https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js';
+		script.integrity = 'sha384-+VfUPEb0PdtChMwmBcBmykRMDd+v6D/oFmB3rZM/puCMDYcIvF968OimRh4KQY9a';
+		script.crossOrigin = 'anonymous';
+		document.head.appendChild(script);
+	}
+
+	// Dynamically load marked.js from CDN. Pinned to a specific release (the
+	// custom Renderer.code override below is compatible with the token-object
+	// signature marked has used since 5.x, and with the legacy (code, lang)
+	// signature) with Subresource Integrity, rather than tracking `latest`
+	// unpinned from an unauthenticated CDN.
 	if (!window.marked) {
 		let script = document.createElement('script');
-		script.src = 'https://cdn.jsdelivr.net/npm/marked/marked.min.js';
+		script.src = 'https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js';
+		script.integrity = 'sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi';
+		script.crossOrigin = 'anonymous';
 		script.onload = () => {
 			if (window.marked) {
 				const renderer = new window.marked.Renderer();
@@ -229,20 +257,7 @@ class AccountantAgentChat {
 		frappe.realtime.on("agent_message_chunk", (data) => {
 			if (data && data.session_id) {
 				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
-				this.active_streams = this.active_streams || {};
-				if (!this.active_streams[data.session_id]) {
-					this.active_streams[data.session_id] = {
-						bubble_id: `stream-${this.generate_uuid()}`,
-						accumulated: "",
-						reasoning: "",
-						steps: [],
-						status: "",
-						start_time: Date.now(),
-						elapsed_seconds: 0
-					};
-					this.start_stream_timer(data.session_id);
-				}
-				let stream = this.active_streams[data.session_id];
+				let stream = this.ensure_stream(data.session_id);
 				stream.accumulated += data.chunk;
 
 				if (data.session_id === this.session_manager.session_id) {
@@ -254,20 +269,7 @@ class AccountantAgentChat {
 		frappe.realtime.on("agent_message_reasoning", (data) => {
 			if (data && data.session_id) {
 				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
-				this.active_streams = this.active_streams || {};
-				if (!this.active_streams[data.session_id]) {
-					this.active_streams[data.session_id] = {
-						bubble_id: `stream-${this.generate_uuid()}`,
-						accumulated: "",
-						reasoning: "",
-						steps: [],
-						status: "",
-						start_time: Date.now(),
-						elapsed_seconds: 0
-					};
-					this.start_stream_timer(data.session_id);
-				}
-				let stream = this.active_streams[data.session_id];
+				let stream = this.ensure_stream(data.session_id);
 				stream.reasoning += data.chunk;
 
 				if (data.session_id === this.session_manager.session_id) {
@@ -276,23 +278,70 @@ class AccountantAgentChat {
 			}
 		});
 
+		// The whole lineup of an "auto" multi-desk run, before any of them has
+		// run a single node. Shown as the plan the steps list will fill in —
+		// without it, a 3-desk run looks identical to a 1-desk run until the
+		// second desk unexpectedly starts.
+		frappe.realtime.on("agent_multi_start", (data) => {
+			if (data && data.session_id) {
+				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
+				let stream = this.ensure_stream(data.session_id);
+				stream.agents_plan = data.agents || [];
+
+				if (data.session_id === this.session_manager.session_id) {
+					this.ui_manager.update_stream_status(this.msg_box, stream.bubble_id, stream.status, stream.steps, stream);
+				}
+			}
+		});
+
+		frappe.realtime.on("agent_subagent_start", (data) => {
+			if (data && data.session_id) {
+				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
+				let stream = this.ensure_stream(data.session_id);
+				stream.current_agent = data.agent;
+				let display = `${__("Handing off to")} ${this.agent_display_name(data.agent)} (${data.index}/${data.total})`;
+				stream.status = display;
+				this.push_step(stream, display, 'agent');
+
+				if (data.session_id === this.session_manager.session_id) {
+					this.ui_manager.update_stream_status(this.msg_box, stream.bubble_id, display, stream.steps, stream);
+				}
+			}
+		});
+
+		frappe.realtime.on("agent_subagent_complete", (data) => {
+			if (data && data.session_id) {
+				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
+				let stream = this.ensure_stream(data.session_id);
+				let display = `${this.agent_display_name(data.agent)} ${__("finished")} (${data.index}/${data.total})`;
+				this.push_step(stream, display, 'agent');
+
+				if (data.session_id === this.session_manager.session_id) {
+					this.ui_manager.update_stream_status(this.msg_box, stream.bubble_id, stream.status, stream.steps, stream);
+				}
+			}
+		});
+
+		frappe.realtime.on("agent_compilation_start", (data) => {
+			if (data && data.session_id) {
+				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
+				let stream = this.ensure_stream(data.session_id);
+				stream.current_agent = null;
+				let display = __("Combining every desk's findings into one answer...");
+				stream.status = display;
+				this.push_step(stream, display, 'agent');
+
+				if (data.session_id === this.session_manager.session_id) {
+					this.ui_manager.update_stream_status(this.msg_box, stream.bubble_id, display, stream.steps, stream);
+				}
+			}
+		});
+
 		frappe.realtime.on("agent_node_start", (data) => {
 			if (data && data.session_id) {
 				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
-				this.active_streams = this.active_streams || {};
-				if (!this.active_streams[data.session_id]) {
-					this.active_streams[data.session_id] = {
-						bubble_id: `stream-${this.generate_uuid()}`,
-						accumulated: "",
-						reasoning: "",
-						steps: [],
-						status: "",
-						start_time: Date.now(),
-						elapsed_seconds: 0
-					};
-					this.start_stream_timer(data.session_id);
-				}
-				let stream = this.active_streams[data.session_id];
+				let stream = this.ensure_stream(data.session_id);
+				if (data.agent) stream.current_agent = data.agent;
 				let node_display_names = {
 					"understand": __("Understanding question & reviewing context..."),
 					"fetch_data": __("Retrieving data from ERPNext / Excel files..."),
@@ -309,13 +358,10 @@ class AccountantAgentChat {
 				// kept only as a fallback for an older agent server.
 				let display = data.label || node_display_names[data.node] || __("Processing...");
 				stream.status = display;
-
-				if (!stream.steps.some(s => s.name === display)) {
-					stream.steps.push({ name: display, type: 'node' });
-				}
+				this.push_step(stream, display, 'node');
 
 				if (data.session_id === this.session_manager.session_id) {
-					this.ui_manager.update_stream_status(this.msg_box, stream.bubble_id, display, stream.steps);
+					this.ui_manager.update_stream_status(this.msg_box, stream.bubble_id, display, stream.steps, stream);
 				}
 			}
 		});
@@ -323,20 +369,8 @@ class AccountantAgentChat {
 		frappe.realtime.on("agent_tool_start", (data) => {
 			if (data && data.session_id) {
 				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
-				this.active_streams = this.active_streams || {};
-				if (!this.active_streams[data.session_id]) {
-					this.active_streams[data.session_id] = {
-						bubble_id: `stream-${this.generate_uuid()}`,
-						accumulated: "",
-						reasoning: "",
-						steps: [],
-						status: "",
-						start_time: Date.now(),
-						elapsed_seconds: 0
-					};
-					this.start_stream_timer(data.session_id);
-				}
-				let stream = this.active_streams[data.session_id];
+				let stream = this.ensure_stream(data.session_id);
+				if (data.agent) stream.current_agent = data.agent;
 				let tool_display_names = {
 					"db_query_sender": __("Querying ERPNext SQL database..."),
 					"get_doctype_schema": __("Reading DocType schema..."),
@@ -351,13 +385,10 @@ class AccountantAgentChat {
 				// what project_rules.md §6 forbids.
 				let display = data.label || tool_display_names[data.tool] || __("Working on it...");
 				stream.status = display;
-
-				if (!stream.steps.some(s => s.name === display)) {
-					stream.steps.push({ name: display, type: 'tool' });
-				}
+				this.push_step(stream, display, 'tool');
 
 				if (data.session_id === this.session_manager.session_id) {
-					this.ui_manager.update_stream_status(this.msg_box, stream.bubble_id, display, stream.steps);
+					this.ui_manager.update_stream_status(this.msg_box, stream.bubble_id, display, stream.steps, stream);
 				}
 			}
 		});
@@ -406,13 +437,16 @@ class AccountantAgentChat {
 						header_title = `${__("Worked for")} ${duration}s`;
 					}
 
+					stream.current_agent = data.agent || stream.current_agent;
+
 					if (data.session_id === active_session_id) {
 						this.ui_manager.finalize_stream_bubble(
-							this.msg_box, 
-							stream.bubble_id, 
-							data.response, 
+							this.msg_box,
+							stream.bubble_id,
+							data.response,
 							new Date().toISOString(),
-							header_title
+							header_title,
+							stream
 						);
 					}
 					delete this.active_streams[data.session_id];
@@ -925,5 +959,67 @@ class AccountantAgentChat {
 			let r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
 			return v.toString(16);
 		});
+	}
+
+	// One home for the "new stream, or the one already running" check that
+	// every realtime handler above used to repeat inline — six copies of the
+	// same six-field object literal, each free to drift from the others.
+	ensure_stream(session_id) {
+		this.active_streams = this.active_streams || {};
+		if (!this.active_streams[session_id]) {
+			this.active_streams[session_id] = {
+				bubble_id: `stream-${this.generate_uuid()}`,
+				accumulated: "",
+				reasoning: "",
+				steps: [],
+				status: "",
+				// Which desk answered — set from the `agent` field every
+				// backend event now carries (stream_adapter.py stamps it on
+				// every event, named desk or auto-routed). Live-session only:
+				// nothing here is persisted, so a reload loses it exactly
+				// like it loses the steps list.
+				current_agent: null,
+				// The full lineup for an auto multi-desk run, if one started.
+				// null means "not a multi-desk run" (or not known yet).
+				agents_plan: null,
+				start_time: Date.now(),
+				elapsed_seconds: 0
+			};
+			this.start_stream_timer(session_id);
+		}
+		return this.active_streams[session_id];
+	}
+
+	// A big task can run the same tool five times in a row (five DB queries,
+	// five schema reads). The old dedupe compared a new step against EVERY
+	// step ever seen, so all five collapsed into one line and the run looked
+	// stuck after the first. This instead only ever merges into the step
+	// immediately before it, and counts instead of hiding the repeat.
+	push_step(stream, name, type) {
+		let last = stream.steps[stream.steps.length - 1];
+		if (last && last.name === name && last.type === type) {
+			last.count = (last.count || 1) + 1;
+		} else {
+			stream.steps.push({ name, type, count: 1 });
+		}
+	}
+
+	// Human name for a desk key, for the live badge and the hand-off lines.
+	// Reads from the same AGENT_DEFINITIONS the selector dropdown uses, so
+	// the two never say different things about what "Analyse Agent" means.
+	agent_display_name(agent_key) {
+		if (!agent_key) return __("Razyyn");
+		let defs = (this.agent_selector && this.agent_selector.AGENT_DEFINITIONS) || {};
+		let def = defs[agent_key];
+		if (def) return def.name;
+		if (agent_key === 'master' || agent_key === 'router') return __("Router");
+		// Every caller of this function drops the return value straight into
+		// a template literal that ends up in .html()/.append()/.replaceWith()
+		// (chat_ui_manager.js thinking-agent-badge and step list). An
+		// `agent_key` that isn't one of the known desks above is untrusted —
+		// it comes off the realtime channel from the agent server — so this
+		// fallback, unlike the trusted def.name/translated strings above it,
+		// must not return it raw.
+		return frappe.utils.escape_html(String(agent_key));
 	}
 }
