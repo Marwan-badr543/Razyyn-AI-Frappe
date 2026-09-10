@@ -36,6 +36,7 @@ import json
 from typing import Any, Optional
 
 import frappe
+from frappe.utils import add_to_date
 
 # Savepoint identifiers are interpolated into SQL by frappe.db.savepoint, so
 # they must never derive from caller input. A fixed prefix plus a monotonic
@@ -78,6 +79,59 @@ def find_write_log_by_key(idempotency_key: str) -> dict | None:
         ],
         as_dict=True,
     )
+
+
+#: How far back an identical document from ANOTHER run counts as a suspected
+#: duplicate. Matches the manager's own resume horizon: a customer re-sending
+#: work whose answer they never saw does it within this window; an identical
+#: entry a month later is ordinary bookkeeping.
+TWIN_WINDOW_HOURS: int = 48
+
+
+def find_committed_twin(request_digest: str, run_id: Optional[str]) -> Optional[dict]:
+    """The newest committed create of an IDENTICAL document from another run.
+
+    The idempotency key deliberately contains the run id, so a customer who
+    re-sends a request in a NEW turn — usually because the first answer was
+    lost — gets a new key and the key cannot catch the repeat. The content
+    digest can: it is computed from the payload alone. Same-run rows are
+    excluded because a batch legitimately contains identical lines under one
+    run, deduplicated by their index in the key instead.
+    """
+    rows = frappe.get_all(
+        "Agent Write Log",
+        filters={
+            "request_digest": request_digest,
+            "status": "COMMITTED",
+            "action": "create",
+            "run_id": ["!=", run_id or ""],
+            "creation": [">", add_to_date(None, hours=-TWIN_WINDOW_HOURS)],
+        },
+        fields=["name", "target_doctype", "target_docname", "creation", "run_id"],
+        order_by="creation desc",
+        limit=1,
+    )
+    return rows[0] if rows else None
+
+
+def duplicate_was_confirmed(request_digest: str, twin_creation) -> bool:
+    """Was the customer already warned about this twin — after it was written?
+
+    A POSSIBLE_DUPLICATE refusal recorded since the twin's commit means the
+    warning reached the customer and they sent the request again anyway; the
+    repeat is then a decision, not an accident, and must be honoured. The
+    timestamp bound matters: after a confirmed second copy lands, IT becomes
+    the newest twin, so a third copy costs its own fresh confirmation.
+    """
+    return bool(frappe.db.exists(
+        "Agent Write Log",
+        {
+            "request_digest": request_digest,
+            "status": "FAILED",
+            "error_code": "POSSIBLE_DUPLICATE",
+            "creation": [">", twin_creation],
+        },
+    ))
 
 
 def reserve_write_log(
@@ -321,9 +375,49 @@ def insert_document(payload: dict) -> Any:
     return doc
 
 
+#: The flag that means "keep the posting date this document already carries".
+#:
+#: SUBMITTING MUST NOT RE-DATE THE DOCUMENT, and without this it silently does.
+#: submit() is save() with a docstatus, so it re-runs validate() — and this
+#: app's validate() resets posting_date and posting_time to NOW whenever the
+#: flag below is clear. A draft raised on the 25th and submitted on the 30th
+#: therefore acquires a posting date of the 30th while every date derived from
+#: the original one stays where it was, and the document refuses itself:
+#:
+#:     "Due Date cannot be before Posting / Supplier Invoice Date"
+#:
+#: which is what the agent reported, correctly and uselessly, for every dated
+#: document a client asked it to post. It never happened to a Journal Entry
+#: because a Journal Entry has no such field, which is exactly why this looked
+#: like "it can only submit journal entries".
+#:
+#: Two reasons this is the right fix rather than a workaround. A posting date
+#: is an accounting fact: moving it into a different period on the way through
+#: a submit is a real error, not a formatting one. And the client approved a
+#: card showing the date the document already had — quietly writing a different
+#: one would post something nobody agreed to.
+_KEEP_THE_DOCUMENTS_OWN_DATE = "set_posting_time"
+
+
 def submit_document(doctype: str, docname: str) -> Any:
-    """Submit an existing document. Runs check_permission("submit")."""
+    """Submit an existing document, as it stands. Runs check_permission("submit").
+
+    Read `_KEEP_THE_DOCUMENTS_OWN_DATE` above before changing anything here.
+    """
     doc = frappe.get_doc(doctype, docname)
+
+    # Guarded by has_field, so a document type without the flag is untouched
+    # and a document type nobody has seen yet is handled by what it declares
+    # rather than by a list of names kept somewhere else.
+    if doc.meta.has_field(_KEEP_THE_DOCUMENTS_OWN_DATE) and not doc.get(
+        _KEEP_THE_DOCUMENTS_OWN_DATE
+    ):
+        doc.set(_KEEP_THE_DOCUMENTS_OWN_DATE, 1)
+        frappe.logger().info(
+            f"Pinned the posting date of {doctype} {docname} before submitting it; "
+            "submit would otherwise have moved it to today."
+        )
+
     doc.submit()
     return doc
 

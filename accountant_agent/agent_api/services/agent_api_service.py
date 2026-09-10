@@ -27,6 +27,7 @@ from accountant_agent.agent_api.db.agent_api_repository import (
 	find_settings_name_by_api_key,
 	get_chat_session_owner,
 	get_doctype_metadata,
+	get_settings_owner,
 	insert_chat_history_record,
 	update_chat_last_timestamp,
 )
@@ -486,8 +487,8 @@ def build_doctype_schema_summary(doctype: str) -> dict:
 	}
 
 
-def _assert_session_owned_by(session_id: str, settings_user: str) -> None:
-	"""Raise ResourceNotFoundError unless session_id exists and belongs to settings_user.
+def _assert_session_owned_by(session_id: str, settings_name: str) -> None:
+	"""Raise ResourceNotFoundError unless the caller's key owns that chat session.
 
 	Without this, any holder of a valid Agent Settings API key could pass any
 	other customer's session_id and inject clarification questions or attach
@@ -495,9 +496,17 @@ def _assert_session_owned_by(session_id: str, settings_user: str) -> None:
 	says "not found" rather than "forbidden" for a session that exists but
 	belongs to someone else, so this endpoint cannot be used to enumerate other
 	customers' session ids by their response code alone.
+
+	BOTH SIDES ARE RESOLVED TO AN ERP USER. ``settings_name`` is what
+	``authenticate_by_api_key`` returns — the Agent Settings DOCUMENT NAME, a
+	generated id like "3hr0oi1o6q", not a person. Comparing that id against the
+	chat's owner ("Administrator") could never match, so every generated file
+	came back to the customer as "Chat session not found" and no report, sheet
+	or PDF could be delivered at all.
 	"""
-	owner = get_chat_session_owner(session_id)
-	if not owner or owner != settings_user:
+	chat_owner = get_chat_session_owner(session_id)
+	caller = get_settings_owner(settings_name)
+	if not chat_owner or not caller or chat_owner != caller:
 		raise ResourceNotFoundError("Chat session", session_id)
 
 
@@ -576,7 +585,8 @@ def process_clarification_request(
 		insert_chat_history_record(session_id, "ai", content_json)
 		update_chat_last_timestamp(session_id)
 
-		# Broadcast real-time notification to connected clients
+		# Broadcast real-time notification to the session owner
+		session_owner = frappe.db.get_value("Agent Chats", session_id, "owner")
 		frappe.publish_realtime(
 			event="agent_clarification_requested",
 			message={
@@ -584,6 +594,7 @@ def process_clarification_request(
 				"questions": parsed_questions,
 				"content": content_json,
 			},
+			user=session_owner,
 		)
 
 		return {

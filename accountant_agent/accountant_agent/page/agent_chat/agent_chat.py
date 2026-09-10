@@ -2,10 +2,12 @@
 # For license information, please see license.txt
 
 import hashlib
+import io
 import json
 import mimetypes
 import os
 import re
+import time
 import uuid
 from base64 import b64decode, b64encode
 from html import escape, unescape
@@ -15,11 +17,15 @@ import frappe
 import requests
 from frappe import _
 from frappe.model.document import Document
+from frappe.utils.password import get_decrypted_password
+
+from accountant_agent import ocr
 
 from accountant_agent.accountant_agent.doctype.agent_settings.agent_settings import (
 	decode_jwt_payload,
 	get_agent_server_url,
 )
+from accountant_agent.agent_config import get_max_upload_files
 
 #: Messages of a conversation sent to the agent server with each turn.
 #:
@@ -28,11 +34,49 @@ from accountant_agent.accountant_agent.doctype.agent_settings.agent_settings imp
 #: re-transmitted and re-tokenised on every message, until the request was
 #: megabytes of history to carry one sentence of question. project_rules.md §3
 #: names this directly: never pass unbounded context to the model.
-MAX_HISTORY_MESSAGES: int = 40
+#:
+#: 50 rather than 40 because the manager on the agent server is now the ONLY
+#: reader of the transcript — the specialists receive a brief instead — and its
+#: planning quality is bounded by what it can see.
+MAX_HISTORY_MESSAGES: int = 50
 
 #: Messages returned to the browser when a chat is opened. The UI pages older
 #: messages in on demand rather than materialising an unbounded conversation.
 MAX_HISTORY_PAGE_SIZE: int = 200
+
+#: Renew an access token this many seconds before it actually expires.
+#:
+#: Waiting for a request to be refused and then renewing works, but it costs the
+#: customer a wasted round trip on every renewal, and it turns one moment of
+#: expiry into a burst of simultaneous renewals from every part of the page.
+#: Renewing early means the token in hand is almost always already valid.
+_TOKEN_RENEWAL_HEADROOM_SECONDS: int = 120
+
+#: How long one worker may hold the renewal lock before it is assumed to have
+#: died. Comfortably longer than the one HTTP call it protects.
+_TOKEN_RENEWAL_LOCK_SECONDS: int = 30
+
+#: How long a worker that lost the race waits for the winner's new token before
+#: giving up and reporting the session as ended.
+_TOKEN_RENEWAL_WAIT_SECONDS: float = 20.0
+
+#: How often that waiting worker looks for the winner's result.
+_TOKEN_RENEWAL_POLL_SECONDS: float = 0.3
+
+#: What renewal can conclude. THREE ANSWERS, NOT TWO.
+#:
+#: These used to be two: a token, or None. Everything that was not a token was
+#: read as "this session is over", and the code acted on it — both stored
+#: credentials erased, the customer sent back to the sign-in screen. So a
+#: restart of the agent service, or any second in which it could not be reached,
+#: signed out every customer on the site. Nothing had gone wrong with their
+#: session at all; we had simply failed to ask.
+#:
+#: "Could not ask" and "was told no" are different answers and are now kept
+#: apart. Only REFUSED ends a session.
+RENEWED: str = "renewed"
+UNREACHABLE: str = "unreachable"
+REFUSED: str = "refused"
 
 
 # ---------------- Ownership Guards ----------------
@@ -126,12 +170,19 @@ def register_agent_on_server(email: str, password: str, company_name: str, api_k
 			error_msg = response.json().get("detail", "Registration failed.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
 	except requests.exceptions.RequestException as e:
-		frappe.log_error(f"Agent registration request error: {e!s}", "Accountant Agent Auth")
+		frappe.log_error(title="Accountant Agent Auth", message=f"Agent registration request error: {e!s}")
 		frappe.throw(_("Could not connect to Agent Server. Please make sure the server is running."))
 
 
-def login_agent_on_server(email: str, password: str) -> str:
-	"""Logs in to the agent server and returns the access token."""
+def login_agent_on_server(email: str, password: str) -> tuple:
+	"""Sign in to the agent server. Returns (access_token, refresh_token).
+
+	The platform issues two tokens: a short-lived access token that opens the
+	API, and a long-lived refresh token whose only use is renewing the first.
+	Both are stored, because the refresh endpoint now requires the refresh
+	token — presenting an expired access token no longer renews anything, which
+	is what stopped a leaked token from lasting forever.
+	"""
 	login_payload = {
 		"username": email,
 		"password": password
@@ -143,35 +194,411 @@ def login_agent_on_server(email: str, password: str) -> str:
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
 
 		token_data = response.json()
-		return token_data.get("access_token")
+		return token_data.get("access_token"), token_data.get("refresh_token")
 	except requests.exceptions.RequestException as e:
-		frappe.log_error(f"Agent login request error: {e!s}", "Accountant Agent Auth")
+		frappe.log_error(title="Accountant Agent Auth", message=f"Agent login request error: {e!s}")
 		frappe.throw(_("Could not connect to Agent Server. Please make sure the server is running."))
 
 
-def refresh_agent_token_on_server(access_token: str) -> str:
-	"""Calls the agent server token refresh endpoint and returns the new access token."""
-	refresh_payload = {
-		"access_token": access_token
-	}
-	try:
-		response = requests.post(f"{get_agent_server_url()}/auth/refresh", json=refresh_payload, timeout=15)
-		if response.status_code == 200:
-			return response.json().get("access_token")
-	except Exception as e:
-		frappe.log_error(f"Agent token refresh request error: {e!s}", "Accountant Agent Refresh")
-	return None
+# ---------------- Access Token Lifecycle ----------------
+#
+# ONE PLACE PRODUCES A LIVE ACCESS TOKEN, AND ONLY ONE WORKER RENEWS AT A TIME.
+#
+# The platform issues a short-lived access token and a long-lived refresh token,
+# and it rotates the refresh token on every renewal: the old one stops working
+# the instant a new one is issued. A second presentation of an already-used
+# refresh token is indistinguishable from a stolen copy, so the platform ends
+# the session outright — which is the right call, and which makes it this side's
+# job never to present one twice.
+#
+# This site presents them from several places at once. The chat page runs its
+# turns in a background worker while the browser is separately asking for the
+# run state, and the setup screens call the platform from a third process. When
+# the access token expires they all notice within the same second, and before
+# this section existed they all raced to renew: the first won, every other one
+# replayed a token that had just been rotated, and the platform correctly ended
+# the session for all of them. The customer saw "please sign in again".
+#
+# So renewal happens here, once, behind a lock every worker on the site shares,
+# and everybody else waits for the winner's result rather than repeating it.
+# A valid token is cached for the rest of its life, so the common path is a
+# cache read rather than a decrypt, a database round trip, or an HTTP call.
 
+
+def _cache():
+	return frappe.cache()
+
+
+def _token_cache_key(settings_name: str) -> str:
+	return f"accountant_agent::access_token::{settings_name}"
+
+
+def _renewal_lock_key(settings_name: str) -> str:
+	return _cache().make_key(f"accountant_agent::token_renewal::{settings_name}")
+
+
+def _stored_secret(settings_name: str, fieldname: str) -> Optional[str]:
+	"""Read one encrypted field straight from storage, past every cache.
+
+	`frappe.get_doc` can hand back a document another worker's write has already
+	superseded, and the whole point of the lock below is to see that write. This
+	reads the secret store itself, so the value is always the current one.
+	"""
+	try:
+		return get_decrypted_password(
+			"Agent Settings", settings_name, fieldname, raise_exception=False
+		)
+	except Exception:
+		return None
+
+
+def _token_seconds_left(token: Optional[str]) -> float:
+	"""Seconds until this access token expires; 0 for anything unusable.
+
+	The expiry is read from the token the platform issued, not tracked
+	separately, so the two can never disagree.
+	"""
+	if not token:
+		return 0.0
+	expires_at = decode_jwt_payload(token).get("exp")
+	if not isinstance(expires_at, (int, float)):
+		return 0.0
+	return max(0.0, float(expires_at) - time.time())
+
+
+def _remember_access_token(settings_name: str, token: str) -> None:
+	"""Cache a token for the part of its life we are willing to use it."""
+	usable_for = int(_token_seconds_left(token) - _TOKEN_RENEWAL_HEADROOM_SECONDS)
+	if usable_for > 0:
+		_cache().set_value(_token_cache_key(settings_name), token, expires_in_sec=usable_for)
+
+
+def forget_cached_access_token(settings_name: str) -> None:
+	"""Drop the cached token — after a sign-out, a disconnect, or a refusal."""
+	try:
+		_cache().delete_value(_token_cache_key(settings_name))
+	except Exception:
+		pass
+
+
+def _warn_if_refresh_token_cannot_be_stored() -> bool:
+	"""True when this site can actually keep a refresh token.
+
+	Frappe writes a Password field to its encrypted store only if the field is
+	part of the DocType as the SITE knows it — which happens at `bench migrate`,
+	not at deploy. A site running new code against an un-migrated schema
+	therefore accepts `doc.refresh_token = ...`, stores nothing, and reads back
+	nothing, with no error anywhere. Every customer on such a site is asked to
+	sign in again the moment their access token expires, which is exactly the
+	fault this check exists to name out loud instead of leaving to guesswork.
+	"""
+	if frappe.get_meta("Agent Settings").get_field("refresh_token"):
+		return True
+
+	frappe.log_error(
+		title="Accountant Agent: site is not migrated",
+		message=(
+			"The Agent Settings DocType on this site has no 'refresh_token' "
+			"field, so sessions cannot be renewed and every customer will be "
+			"asked to sign in again as soon as their access token expires. "
+			"Run 'bench --site <site> migrate' to apply the schema."
+		),
+	)
+	return False
+
+
+def _exchange_refresh_token(settings_name: str, email: str) -> tuple:
+	"""Trade the stored refresh token for a new pair. Callers must hold the lock.
+
+	Returns `(verdict, token)`: `(RENEWED, token)`, `(UNREACHABLE, None)` when
+	the platform could not be asked, or `(REFUSED, None)` when it answered that
+	the session is over.
+
+	The new refresh token MUST be saved: the platform rotates on every exchange,
+	so failing to store it makes the next renewal a replay. The platform will
+	repeat its answer for a couple of minutes if the same token is presented
+	again, which covers a reply lost in transit — but not a reply we threw away.
+	"""
+	if not _warn_if_refresh_token_cannot_be_stored():
+		return (REFUSED, None)
+
+	refresh_token = _stored_secret(settings_name, "refresh_token")
+	if not refresh_token:
+		# An account connected before refresh tokens existed has none stored.
+		# One sign-in is the intended, one-off cost of retiring credentials that
+		# never expired.
+		return (REFUSED, None)
+
+	try:
+		response = requests.post(
+			f"{get_agent_server_url()}/auth/refresh",
+			json={"refresh_token": refresh_token},
+			timeout=15,
+		)
+	except Exception as exc:
+		# A network failure is NOT an ended session. Saying nothing here leaves
+		# the stored refresh token intact, so the next attempt can still use it.
+		frappe.log_error(
+			title="Accountant Agent: renewal could not reach the platform",
+			message=f"Renewing {email} failed before the platform answered: {exc}",
+		)
+		return (UNREACHABLE, None)
+
+	if response.status_code >= 500:
+		# The platform is up but broken. That is our problem, not the
+		# customer's credential, and it must not cost them their session.
+		frappe.log_error(
+			title="Accountant Agent: the platform could not renew",
+			message=f"Renewing {email} returned {response.status_code}: {response.text[:300]}",
+		)
+		return (UNREACHABLE, None)
+
+	if response.status_code != 200:
+		frappe.log_error(
+			title="Accountant Agent: token renewal refused",
+			message=f"The platform refused to renew {email}: {response.status_code} {response.text[:300]}",
+		)
+		return (REFUSED, None)
+
+	try:
+		data = response.json()
+	except Exception:
+		return (UNREACHABLE, None)
+
+	new_access = data.get("access_token")
+	new_refresh = data.get("refresh_token")
+	if not new_access:
+		return (UNREACHABLE, None)
+
+	# STORED BEFORE IT IS USED. The platform has already retired the old refresh
+	# token by the time this line runs, so a failure to write the replacement
+	# would leave this site holding a credential that can never be used again.
+	save_agent_settings(email, access_token=new_access, refresh_token=new_refresh or "")
+	_remember_access_token(settings_name, new_access)
+	return (RENEWED, new_access)
+
+
+def _usable(token: Optional[str], refused: Optional[str]) -> bool:
+	"""Whether a stored token can be handed out.
+
+	`refused` is a token the platform has just rejected. It may still have
+	minutes left on its clock and it will still look perfectly good here, so
+	every shortcut that avoids a renewal has to check for it by name. Without
+	this, the recovery from a rejection handed back the very token that had been
+	rejected, retried with it, failed identically, and reported a dead session.
+	"""
+	if not token or token == refused:
+		return False
+	return _token_seconds_left(token) > _TOKEN_RENEWAL_HEADROOM_SECONDS
+
+
+def _renew_access_token(
+	settings_name: str, email: str, refused: Optional[str] = None,
+) -> tuple:
+	"""Renew once, site-wide, however many workers ask at the same moment.
+
+	Returns the same `(verdict, token)` pair `_exchange_refresh_token` does.
+	"""
+	cache = _cache()
+	lock_key = _renewal_lock_key(settings_name)
+	give_up_at = time.monotonic() + _TOKEN_RENEWAL_WAIT_SECONDS
+
+	while True:
+		if cache.set(lock_key, b"1", nx=True, ex=_TOKEN_RENEWAL_LOCK_SECONDS):
+			try:
+				# Another worker may have renewed while this one was queuing.
+				current = _stored_secret(settings_name, "access_token")
+				if _usable(current, refused):
+					_remember_access_token(settings_name, current)
+					return (RENEWED, current)
+				return _exchange_refresh_token(settings_name, email)
+			finally:
+				try:
+					cache.delete(lock_key)
+				except Exception:
+					pass
+
+		# Somebody else is renewing. Their result is what this worker wants.
+		time.sleep(_TOKEN_RENEWAL_POLL_SECONDS)
+		current = _stored_secret(settings_name, "access_token")
+		if _usable(current, refused):
+			_remember_access_token(settings_name, current)
+			return (RENEWED, current)
+		if time.monotonic() >= give_up_at:
+			# Nobody's renewal produced anything within the wait. Whatever went
+			# wrong, it was not the platform telling us the session is over.
+			return (UNREACHABLE, None)
+
+
+def token_verdict(agent_email: str, refused: Optional[str] = None) -> tuple:
+	"""A live access token for this account, and why if there is none.
+
+	`refused` is a token the platform has just rejected. Naming it here is what
+	makes recovery from a rejection real: without it the fastest answer — the
+	stored token, which still has minutes on its clock — is the rejected one.
+	"""
+	doc = get_agent_settings_doc(agent_email)
+	if not doc:
+		return (REFUSED, None)
+
+	if refused:
+		forget_cached_access_token(doc.name)
+	else:
+		# `expires=True` because this key has an expiry, and that is not a
+		# detail of the write: without it Frappe keeps a copy in the process's
+		# own memory and answers from that for the rest of the request. A
+		# background worker that has read this token once would keep answering
+		# with it even after a renewal had replaced it.
+		cached = _cache().get_value(_token_cache_key(doc.name), expires=True)
+		if cached:
+			return (RENEWED, cached)
+
+		token = _stored_secret(doc.name, "access_token")
+		if _usable(token, refused):
+			_remember_access_token(doc.name, token)
+			return (RENEWED, token)
+
+	return _renew_access_token(doc.name, agent_email, refused)
+
+
+def get_agent_access_token(
+	agent_email: str, *, force_renew: bool = False, refused: Optional[str] = None,
+) -> Optional[str]:
+	"""A token that is live now, or None. The only supported way to get one.
+
+	Callers that need to tell "the session is over" apart from "we could not
+	renew just now" should use `token_verdict` instead.
+	"""
+	if force_renew and not refused:
+		refused = _stored_secret_for(agent_email, "access_token")
+	return token_verdict(agent_email, refused)[1]
+
+
+def _stored_secret_for(email: str, fieldname: str) -> Optional[str]:
+	"""One stored secret, looked up by account rather than by record name."""
+	doc = get_agent_settings_doc(email)
+	return _stored_secret(doc.name, fieldname) if doc else None
+
+
+def refresh_agent_token_on_server(
+	email: str, refused: Optional[str] = None,
+) -> Optional[str]:
+	"""Renew this account's access token, whatever else the site is doing.
+
+	Kept as the name the rest of the app calls after a refusal; the work is done
+	by `token_verdict`, which is where renewal is serialised.
+	"""
+	return get_agent_access_token(email, force_renew=True, refused=refused)
+
+
+
+# ---------------- Talking to the platform ----------------
+#
+# ONE PLACE SENDS A REQUEST AND ONE PLACE RECOVERS FROM A REJECTED TOKEN.
+#
+# Every endpoint below used to carry its own copy of "get a token, send it, and
+# if the answer is 401 renew and try once more". They had drifted: one of them
+# ended the customer's session when renewal failed for ANY reason, including the
+# agent service being restarted — which signed out everybody on the site for the
+# few seconds it was down. Recovery is a property of the connection, not of each
+# endpoint, so it is written once here.
+
+
+class SessionEnded(Exception):
+	"""The platform says this session is over. The customer must sign in again."""
+
+
+class PlatformUnreachable(Exception):
+	"""We could not ask. Nothing is wrong with the session; try again."""
+
+
+def call_the_platform(agent_email: str, send):
+	"""Send one request with a live token, renewing and retrying once on a 401.
+
+	`send` is given the headers to use and returns the response; it is called
+	twice at most, so anything it consumes — an open file, a stream — must be
+	rewound by the caller between attempts.
+	"""
+	verdict, token = token_verdict(agent_email)
+	if verdict == REFUSED:
+		raise SessionEnded(_("Your session has ended. Please sign in again."))
+	if not token:
+		raise PlatformUnreachable(
+			_("Razyyn could not be reached just now. Please try again.")
+		)
+
+	response = send({"Authorization": f"Bearer {token}"})
+	if response.status_code != 401:
+		return response
+
+	# The token was refused. It is named here so the renewal cannot hand the
+	# same one back — it still has minutes left on its clock and every shortcut
+	# would otherwise consider it perfectly good.
+	verdict, fresh = token_verdict(agent_email, refused=token)
+	if verdict == RENEWED and fresh:
+		return send({"Authorization": f"Bearer {fresh}"})
+
+	if verdict == REFUSED:
+		end_agent_session(agent_email)
+		raise SessionEnded(_("Your session has ended. Please sign in again."))
+
+	# UNREACHABLE. The session is almost certainly fine — we simply could not
+	# renew. Erasing the credentials here is what used to turn a restart of the
+	# agent service into a sign-in prompt for every customer on the site.
+	raise PlatformUnreachable(
+		_("Razyyn could not be reached just now. Please try again.")
+	)
 
 # ---------------- Database Connection Helpers ----------------
 
+def _erase_secret(settings_name: str, fieldname: str) -> None:
+	"""Actually remove one encrypted field's value.
+
+	Frappe stores Password fields in `__Auth` and skips empty ones on save, so
+	setting the field to "" and saving leaves the previous secret readable. The
+	row has to go.
+	"""
+	frappe.db.sql(
+		"delete from `__Auth` where `doctype`='Agent Settings' and `name`=%s and `fieldname`=%s",
+		(settings_name, fieldname),
+	)
+	frappe.db.set_value("Agent Settings", settings_name, fieldname, "", update_modified=False)
+
+
+def end_agent_session(email: str) -> None:
+	"""Forget both credentials for this account, so the next step is a sign-in.
+
+	Used wherever renewal has failed. Both tokens go: leaving the refresh token
+	behind meant a credential the platform had already rejected stayed on this
+	site for weeks, and leaving the access token behind meant the chat page
+	still reported the account as connected while nothing it did would work.
+	"""
+	doc = get_agent_settings_doc(email)
+	if not doc:
+		return
+	_erase_secret(doc.name, "access_token")
+	_erase_secret(doc.name, "refresh_token")
+	frappe.db.commit()
+	forget_cached_access_token(doc.name)
+
+
 def save_agent_settings(
-	email: str, api_key: str | None = None, access_token: str | None = None
+	email: str,
+	api_key: str | None = None,
+	access_token: str | None = None,
+	refresh_token: str | None = None,
 ) -> None:
 	"""Create or update the caller's Agent Settings record.
 
 	`api_key_hash` is maintained by AgentSettings.validate, so setting the key
 	here is enough to keep the authentication index correct.
+
+	AN EMPTY STRING MEANS "REMOVE THIS SECRET", and it is honoured rather than
+	quietly ignored. Frappe skips empty Password fields when a document is
+	saved, so the several places that end a dead session by writing "" here
+	were leaving the old credentials in place — including a refresh token that
+	still opened the platform. Clearing them is done against the secret store
+	itself, which is the only thing that actually removes them.
 	"""
 	doc = get_agent_settings_doc(email)
 
@@ -179,9 +606,17 @@ def save_agent_settings(
 		if doc:
 			if access_token is not None:
 				doc.access_token = access_token
+			if refresh_token is not None:
+				doc.refresh_token = refresh_token
 			if api_key is not None:
 				doc.api_key = api_key
 			doc.save(ignore_permissions=True)
+
+			for fieldname, value in (
+				("access_token", access_token), ("refresh_token", refresh_token),
+			):
+				if value == "":
+					_erase_secret(doc.name, fieldname)
 		else:
 			if not api_key:
 				frappe.throw(_("An API key is required to create a new connection."))
@@ -190,8 +625,12 @@ def save_agent_settings(
 				"email": email,
 				"api_key": api_key,
 				"access_token": access_token or "",
+				"refresh_token": refresh_token or "",
 			}).insert(ignore_permissions=True)
 		frappe.db.commit()
+
+		if doc:
+			forget_cached_access_token(doc.name)
 	except (frappe.ValidationError, frappe.DuplicateEntryError, frappe.PermissionError):
 		# Refusals the customer can act on — an e-mail already connected to a
 		# different ERPNext user, a missing key — must reach them intact. Only
@@ -243,10 +682,10 @@ def deprecate_previous_plans(session_id: str) -> None:
 							json.dumps(plan_data, ensure_ascii=False)
 						)
 				except Exception as json_err:
-					frappe.log_error(f"Error deprecating plan message {msg.name}: {json_err!s}", "Accountant Agent Deprecate Plan")
+					frappe.log_error(title="Accountant Agent Deprecate Plan", message=f"Error deprecating plan message {msg.name}: {json_err!s}")
 		frappe.db.commit()
 	except Exception as e:
-		frappe.log_error(f"Error in deprecate_previous_plans: {e!s}", "Accountant Agent Deprecate Plan")
+		frappe.log_error(title="Accountant Agent Deprecate Plan", message=f"Error in deprecate_previous_plans: {e!s}")
 
 
 def save_chat_history(session_id: str, sender: str, content: str) -> None:
@@ -266,7 +705,7 @@ def save_chat_history(session_id: str, sender: str, content: str) -> None:
 		doc.insert(ignore_permissions=True)
 		frappe.db.commit()
 	except Exception as e:
-		frappe.log_error(f"Error saving user message to history: {e!s}", "Accountant Agent Chat")
+		frappe.log_error(title="Accountant Agent Chat", message=f"Error saving user message to history: {e!s}")
 
 
 def save_chat_event_if_not_duplicate(session_id: str, sender: str, content: str) -> None:
@@ -282,7 +721,7 @@ def save_chat_event_if_not_duplicate(session_id: str, sender: str, content: str)
 			return
 		save_chat_history(session_id, sender, content)
 	except Exception as e:
-		frappe.log_error(f"Error checking/saving chat event: {e!s}", "Accountant Agent Chat Event")
+		frappe.log_error(title="Accountant Agent Chat Event", message=f"Error checking/saving chat event: {e!s}")
 
 
 def build_history_payload(session_id: str) -> str:
@@ -471,66 +910,6 @@ def _prose_only(content: str) -> str:
 	return unescape(_CARRIED_MARKUP.sub("", text).strip())
 
 
-def post_message_to_agent(
-	message: str,
-	token: str,
-	custom_instructions: str | None = None,
-	session_id: str | None = None,
-	agent_type: str = "auto",
-	file_urls: list | None = None,
-	history: list | None = None,
-) -> requests.Response:
-	"""Sends message to the agent server chat API, with optional attached files and agent_type."""
-	headers = {
-		"Authorization": f"Bearer {token}",
-	}
-	history_json = build_history_payload(session_id)
-
-	payload_data = {
-		"message": message,
-		"history": history_json,
-		"custom_instructions": custom_instructions or "",
-		"session_id": session_id or "",
-		"selected_agent": agent_type or "auto",
-	}
-
-	files_list = []
-	opened_files = []
-
-	try:
-		if file_urls:
-			for url in file_urls:
-				# Resolved through the same owner-scoped helper the download
-				# endpoint uses, so a session_id that names another user's
-				# attachment forwards nothing rather than leaking it.
-				file_path = resolve_agent_upload_path(url, frappe.session.user)
-				if not file_path:
-					continue
-
-				handle = open(file_path, "rb")
-				opened_files.append(handle)
-				files_list.append(
-					("files", (_original_filename(os.path.basename(file_path)), handle))
-				)
-
-		# Route request directly to chat endpoint
-		endpoint_url = f"{get_agent_server_url()}/agent/chat"
-
-		return requests.post(
-			endpoint_url,
-			data=payload_data,
-			files=files_list if files_list else None,
-			headers=headers,
-			timeout=AGENT_STREAM_TIMEOUT,
-		)
-	finally:
-		for f in opened_files:
-			try:
-				f.close()
-			except Exception:
-				pass
-
-
 def update_chat_timestamp(session_id: str) -> None:
 	"""Updates last_update timestamp of the chat session."""
 	if session_id and frappe.db.exists("Agent Chats", session_id):
@@ -541,7 +920,7 @@ def update_chat_timestamp(session_id: str) -> None:
 # ---------------- Whitelisted Page Methods ----------------
 
 @frappe.whitelist()
-def get_connection_status(agent_email=None):
+def get_connection_status(agent_email: str | None = None) -> dict:
 	"""Checks if connection status settings are present for the given email."""
 	user = frappe.session.user
 	if user == "Guest" or not agent_email:
@@ -554,13 +933,13 @@ def get_connection_status(agent_email=None):
 			if token:
 				return {"connected": True, "email": doc.email}
 	except Exception as e:
-		frappe.log_error(f"Error checking connection status: {e!s}", "Accountant Agent Connect")
+		frappe.log_error(title="Accountant Agent Connect", message=f"Error checking connection status: {e!s}")
 
 	return {"connected": False, "email": None}
 
 
 @frappe.whitelist()
-def authenticate_agent(mode, email, password, company_name=None):
+def authenticate_agent(mode: str, email: str, password: str, company_name: str | None = None) -> dict:
 	"""Handles login or signup requests against the agent server and updates local settings."""
 	user = frappe.session.user
 	if user == "Guest":
@@ -595,19 +974,19 @@ def authenticate_agent(mode, email, password, company_name=None):
 				frappe.db.commit()
 			raise e
 
-		# Automatically login to acquire token
-		access_token = login_agent_on_server(email, password)
-		save_agent_settings(email, access_token=access_token)
+		# Automatically login to acquire tokens
+		access_token, refresh_token = login_agent_on_server(email, password)
+		save_agent_settings(email, access_token=access_token, refresh_token=refresh_token)
 
 	elif mode == "login":
 		# Authenticate with agent server
-		access_token = login_agent_on_server(email, password)
+		access_token, refresh_token = login_agent_on_server(email, password)
 
 		# Check if local record exists (must exist as requested by user)
 		if not get_agent_settings_doc(email):
 			frappe.throw(_("Agent settings not found for this email. Please sign up first."))
 
-		save_agent_settings(email, access_token=access_token)
+		save_agent_settings(email, access_token=access_token, refresh_token=refresh_token)
 
 	else:
 		frappe.throw(_("Invalid mode specified."))
@@ -642,14 +1021,21 @@ def get_latest_plan_message(session_id: str, lock: bool = False):
 					# Return fresh doc after lock is acquired
 					return frappe.get_doc("Agent Chat History", msg.name)
 				except Exception as e:
-					frappe.log_error(f"Database lock timeout or error: {e!s}", "Accountant Agent Plan Lock")
+					frappe.log_error(title="Accountant Agent Plan Lock", message=f"Database lock timeout or error: {e!s}")
 					frappe.throw(_("Could not acquire lock on the plan record. Please try again."))
 			return msg
 	return None
 
 
 @frappe.whitelist()
-def send_message(message, session_id, agent_email, agent_type="auto", file_urls=None):
+def send_message(
+	message: str,
+	session_id: str,
+	agent_email: str,
+	agent_type: str = "auto",
+	file_urls: list[str] | str | None = None,
+	scan: bool | str = False,
+) -> dict:
 	"""Proxy message send to agent by enqueuing a background worker to handle streaming."""
 	user = _assert_signed_in()
 	assert_owns_session(session_id)
@@ -658,9 +1044,14 @@ def send_message(message, session_id, agent_email, agent_type="auto", file_urls=
 	if not doc:
 		frappe.throw(_("Not authenticated with Razyyn."))
 
-	access_token = doc.get_password("access_token", raise_exception=False)
-	if not access_token:
-		frappe.throw(_("Missing access token. Please re-authenticate."))
+	# Renewed here, in the request the customer is waiting on, rather than in
+	# the background worker: a session that cannot be renewed must be reported
+	# now, as a refusal they can act on, not as a failed message minutes later.
+	verdict, _token = token_verdict(agent_email)
+	if verdict == REFUSED:
+		frappe.throw(_("Your session has ended. Please sign in again."))
+	if verdict == UNREACHABLE:
+		frappe.throw(_("Razyyn could not be reached just now. Please try again."))
 
 	# Deserialize file_urls list if sent as JSON string
 	parsed_file_urls = _parse_json_list(file_urls)
@@ -679,7 +1070,7 @@ def send_message(message, session_id, agent_email, agent_type="auto", file_urls=
 				latest_plan.save(ignore_permissions=True)
 				frappe.db.commit()
 		except Exception as e:
-			frappe.log_error(f"Error updating plan status JSON: {e!s}", "Accountant Agent Plan Status Update")
+			frappe.log_error(title="Accountant Agent Plan Status Update", message=f"Error updating plan status JSON: {e!s}")
 
 	# THE CUSTOMER'S OWN WORDS ALWAYS GO INTO THEIR TRANSCRIPT.
 	#
@@ -714,6 +1105,10 @@ def send_message(message, session_id, agent_email, agent_type="auto", file_urls=
 		save_chat_history(session_id, "human", message)
 		update_chat_timestamp(session_id)
 
+	# A new turn is not the cancelled one. Cleared here, in the request that
+	# asks for it, so a stop pressed on the previous message cannot end this one.
+	forget_the_cancellation(session_id)
+
 	# Enqueue the task to background worker to avoid HTTP timeout
 	frappe.enqueue(
 		"accountant_agent.accountant_agent.page.agent_chat.agent_chat.process_agent_message_background",
@@ -725,6 +1120,7 @@ def send_message(message, session_id, agent_email, agent_type="auto", file_urls=
 		agent_type=agent_type,
 		file_urls=parsed_file_urls,
 		user=user,
+		scan=_asked_for(scan),
 	)
 
 	return {"status": "queued", "session_id": session_id}
@@ -737,6 +1133,7 @@ def process_agent_message_background(
 	agent_type: str,
 	file_urls: list,
 	user: str,
+	scan: bool = False,
 ) -> None:
 	"""Runs agent chat execution in a background worker task and streams progress to client."""
 	frappe.set_user(user)
@@ -744,19 +1141,7 @@ def process_agent_message_background(
 	doc = get_agent_settings_doc(agent_email)
 	if not doc:
 		error_msg = f"Agent Settings not found for {agent_email}."
-		frappe.log_error(error_msg, "Accountant Agent Stream")
-		save_chat_event_if_not_duplicate(session_id, "ai", f"⚠️ **Error:** {error_msg}")
-		update_chat_timestamp(session_id)
-		frappe.publish_realtime(
-			event="agent_message_error",
-			message={"session_id": session_id, "error": error_msg},
-			user=user,
-		)
-		return
-
-	access_token = doc.get_password("access_token")
-	if not access_token:
-		error_msg = "Access token missing. Please reconnect."
+		frappe.log_error(title="Accountant Agent Stream", message=error_msg)
 		save_chat_event_if_not_duplicate(session_id, "ai", f"⚠️ **Error:** {error_msg}")
 		update_chat_timestamp(session_id)
 		frappe.publish_realtime(
@@ -768,9 +1153,6 @@ def process_agent_message_background(
 
 	custom_instructions = getattr(doc, "custom_instructions", None) or ""
 
-	headers = {
-		"Authorization": f"Bearer {access_token}",
-	}
 	history_json = build_history_payload(session_id)
 
 	payload_data = {
@@ -783,57 +1165,50 @@ def process_agent_message_background(
 		"selected_agent": agent_type or "auto",
 	}
 
-	files_list = []
-	opened_files = []
+	# Bound before the try: the `finally` below closes them, and it runs even if
+	# building the parts is what failed.
+	files_list: list = []
+	opened_files: list = []
 
 	try:
-		if file_urls:
-			for url in file_urls:
-				# Resolved through the same owner-scoped helper the download
-				# endpoint uses, so a session_id that names another user's
-				# attachment forwards nothing rather than leaking it.
-				file_path = resolve_agent_upload_path(url, frappe.session.user)
-				if not file_path:
-					continue
+		if scan:
+			read_the_attachments(file_urls, frappe.session.user, session_id, user)
 
-				handle = open(file_path, "rb")
-				opened_files.append(handle)
-				files_list.append(
-					("files", (_original_filename(os.path.basename(file_path)), handle))
-				)
+		files_list, opened_files = build_upload_parts(
+			file_urls, frappe.session.user, scan=scan,
+		)
+
+		# The last moment at which stopping is free. Past this the request is
+		# with the platform, which cancels its own runs.
+		if turn_was_cancelled(session_id):
+			frappe.publish_realtime(
+				event="agent_message_cancelled",
+				message={"session_id": session_id},
+				user=user,
+			)
+			return
 
 		endpoint_url = f"{get_agent_server_url()}/agent/chat"
 
-		response = requests.post(
-			endpoint_url,
-			data=payload_data,
-			files=files_list if files_list else None,
-			headers=headers,
-			stream=True,
-			timeout=AGENT_STREAM_TIMEOUT,
-		)
+		def send(headers):
+			# The attachments were read to the end by any previous attempt, so
+			# they are rewound before each one. Sending them at their end mark
+			# uploads empty files, which the desk then reports as unreadable.
+			for handle in opened_files:
+				try:
+					handle.seek(0)
+				except Exception:
+					pass
+			return requests.post(
+				endpoint_url,
+				data=payload_data,
+				files=files_list if files_list else None,
+				headers=headers,
+				stream=True,
+				timeout=AGENT_STREAM_TIMEOUT,
+			)
 
-		if response.status_code == 401:
-			new_access_token = refresh_agent_token_on_server(access_token)
-			if new_access_token:
-				save_agent_settings(agent_email, access_token=new_access_token)
-				headers["Authorization"] = f"Bearer {new_access_token}"
-
-				# Re-open/reset files
-				for f in opened_files:
-					f.seek(0)
-
-				response = requests.post(
-					endpoint_url,
-					data=payload_data,
-					files=files_list if files_list else None,
-					headers=headers,
-					stream=True,
-					timeout=AGENT_STREAM_TIMEOUT,
-				)
-			else:
-				save_agent_settings(agent_email, access_token="")
-				raise Exception("Session expired. Please reconnect.")
+		response = call_the_platform(agent_email, send)
 
 		if response.status_code == 499:
 			save_chat_event_if_not_duplicate(session_id, "ai", "⚠️ **Cancelled**")
@@ -853,6 +1228,10 @@ def process_agent_message_background(
 			raise Exception(err_detail)
 
 		current_event = None
+		#: Set by a "done" event: the turn produced an answer for the customer.
+		answered = False
+		#: The last step failure seen, shown only if nothing else answers.
+		last_error = ""
 		for line in response.iter_lines(chunk_size=1):
 			if not line:
 				continue
@@ -901,6 +1280,20 @@ def process_agent_message_background(
 						},
 						user=user,
 					)
+				elif current_event == "todo":
+					# The manager's live checklist. Relayed whole on every
+					# change — it is small (id/title/status per task) and a full
+					# redraw keeps the client stateless about ordering. The UI
+					# pins it inside the stream bubble and ticks tasks off.
+					frappe.publish_realtime(
+						event="agent_todo_update",
+						message={
+							"session_id": session_id,
+							"status": data_json.get("status", ""),
+							"tasks": data_json.get("tasks", []),
+						},
+						user=user,
+					)
 				elif current_event == "tool_start":
 					frappe.publish_realtime(
 						event="agent_tool_start",
@@ -913,6 +1306,7 @@ def process_agent_message_background(
 						user=user,
 					)
 				elif current_event == "done":
+					answered = True
 					ai_response = data_json.get("response", "")
 
 					# WHAT THE AGENT PAUSED FOR, AND WHAT THE PERSON READS, ARE
@@ -952,19 +1346,75 @@ def process_agent_message_background(
 							message={"session_id": session_id, "questions": questions},
 							user=user,
 						)
+				elif current_event == "cancelled":
+					# The customer stopped the work. That IS the answer to this
+					# turn; nothing failed and nothing is missing.
+					answered = True
+					save_chat_event_if_not_duplicate(session_id, "ai", "⚠️ **Cancelled**")
+					update_chat_timestamp(session_id)
+					frappe.publish_realtime(
+						event="agent_message_cancelled",
+						message={"session_id": session_id},
+						user=user,
+					)
 				elif current_event == "error":
-					raise Exception(data_json.get("detail", "Unknown error in stream"))
+					# A STEP THAT FAILED IS NOT A TURN THAT FAILED.
+					#
+					# The manager runs a checklist: one specialist can fail (an
+					# audit the customer's plan does not include, an ERP that
+					# refused a write) while the rest of the list still runs and
+					# still has a report to give. Raising here threw that report
+					# away and showed "⚠️ Error: Unknown error in stream" —
+					# neither the reason nor the work. The reason is remembered
+					# and only becomes the turn's answer if the stream ends
+					# without one.
+					last_error = (
+						data_json.get("detail")
+						or data_json.get("message")
+						or data_json.get("error")
+						or ""
+					)
+					if last_error:
+						frappe.log_error(
+							title="Accountant Agent: step failed",
+							message=f"Session {session_id}: {last_error}",
+						)
+
+		if not answered:
+			raise Exception(last_error or "The request ended without an answer.")
 
 	except Exception as e:
+		# THE CUSTOMER IS TOLD FIRST, AND NOTHING IS ALLOWED TO COME BEFORE IT.
+		#
+		# This handler used to write to the Error Log before releasing the page,
+		# and the log write itself could fail: `frappe.log_error` puts its title
+		# in a 140-character column and REFUSES a longer one. A failure whose
+		# text was long — "the agent server could not be reached at
+		# 127.0.0.1:8010 ..." is 200 characters — therefore raised a second
+		# exception inside the handler for the first, and the two lines that
+		# tell the customer never ran. The chat sat spinning for ever with
+		# nothing in any log the customer or we could see, and the only failures
+		# that got reported were the ones with short messages.
+		#
+		# Reporting comes first, logging last and in its own guard, so no
+		# bookkeeping can ever take the answer away again.
 		error_msg = str(e)
-		save_chat_event_if_not_duplicate(session_id, "ai", f"⚠️ **Error:** {error_msg}")
-		update_chat_timestamp(session_id)
-		frappe.log_error(f"Error processing agent message in background: {error_msg}", "Accountant Agent Chat Background")
-		frappe.publish_realtime(
-			event="agent_message_error",
-			message={"session_id": session_id, "error": error_msg},
-			user=user,
-		)
+		try:
+			save_chat_event_if_not_duplicate(session_id, "ai", f"⚠️ **Error:** {error_msg}")
+			update_chat_timestamp(session_id)
+		finally:
+			frappe.publish_realtime(
+				event="agent_message_error",
+				message={"session_id": session_id, "error": error_msg},
+				user=user,
+			)
+		try:
+			frappe.log_error(
+				title="Accountant Agent: the turn failed",
+				message=f"Session {session_id}: {error_msg}",
+			)
+		except Exception:
+			pass
 	finally:
 		for f in opened_files:
 			try:
@@ -1219,7 +1669,7 @@ def _answer_text(message: str) -> str:
 
 
 @frappe.whitelist()
-def cancel_agent(session_id, agent_email):
+def cancel_agent(session_id: str, agent_email: str) -> dict:
 	"""Proxy cancellation request to the agent server."""
 	_assert_signed_in()
 	assert_owns_session(session_id)
@@ -1228,32 +1678,24 @@ def cancel_agent(session_id, agent_email):
 	if not doc:
 		frappe.throw(_("Not authenticated with Razyyn."))
 
-	access_token = doc.get_password("access_token", raise_exception=False)
+	# Recorded before anybody is asked, because the turn may not have left this
+	# server yet — see `remember_the_cancellation`.
+	remember_the_cancellation(session_id)
 
-	if not access_token:
-		frappe.throw(_("Missing access token. Please re-authenticate."))
+	payload = {"session_id": session_id}
 
-	headers = {
-		"Authorization": f"Bearer {access_token}",
-		"Content-Type": "application/json"
-	}
-	payload = {
-		"session_id": session_id
-	}
+	def send(headers):
+		headers["Content-Type"] = "application/json"
+		return requests.post(
+			f"{get_agent_server_url()}/agent/cancel",
+			json=payload, headers=headers, timeout=15,
+		)
+
 	try:
-		response = requests.post(f"{get_agent_server_url()}/agent/cancel", json=payload, headers=headers, timeout=15)
-
-		# Handle expired token (401)
-		if response.status_code == 401:
-			new_access_token = refresh_agent_token_on_server(access_token)
-			if new_access_token:
-				save_agent_settings(agent_email, access_token=new_access_token)
-				headers["Authorization"] = f"Bearer {new_access_token}"
-				response = requests.post(f"{get_agent_server_url()}/agent/cancel", json=payload, headers=headers, timeout=15)
-			else:
-				# Clear invalid token to force re-login
-				save_agent_settings(agent_email, access_token="")
-				frappe.throw(_("Session expired. Please reconnect."))
+		try:
+			response = call_the_platform(agent_email, send)
+		except (SessionEnded, PlatformUnreachable) as stopped:
+			frappe.throw(str(stopped))
 
 		if response.status_code != 200:
 			error_msg = response.json().get("detail", "Error from Agent Server.")
@@ -1264,8 +1706,46 @@ def cancel_agent(session_id, agent_email):
 		return {"success": True, "message": response.json().get("message")}
 
 	except requests.exceptions.RequestException as e:
-		frappe.log_error(f"Agent cancel request exception: {e!s}", "Accountant Agent Cancel")
+		frappe.log_error(title="Accountant Agent Cancel", message=f"Agent cancel request exception: {e!s}")
 		frappe.throw(_("Unable to communicate with Agent Server. Please check if it's running."))
+
+
+@frappe.whitelist()
+def get_run_state(session_id: str, agent_email: str) -> dict:
+	"""The manager's checklist for one session, for redrawing after a reload.
+
+	A thin proxy to the agent server's GET /agent/chat/state. Called once on
+	page load or session switch — never polled: live updates arrive over the
+	socket as `agent_todo_update` events. Degrades to "none" on any failure,
+	because a missing checklist must not break opening a chat.
+	"""
+	_assert_signed_in()
+	assert_owns_session(session_id)
+
+	doc = get_agent_settings_doc(agent_email)
+	if not doc:
+		return {"status": "none", "tasks": []}
+
+	def send(headers):
+		return requests.get(
+			f"{get_agent_server_url()}/agent/chat/state",
+			params={"session_id": session_id},
+			headers=headers,
+			timeout=15,
+		)
+
+	try:
+		try:
+			response = call_the_platform(agent_email, send)
+		except (SessionEnded, PlatformUnreachable):
+			return {"status": "none", "tasks": []}
+		if response.status_code == 200:
+			body = response.json()
+			if isinstance(body, dict):
+				return body
+	except requests.exceptions.RequestException as exc:
+		frappe.log_error(title="Accountant Agent Run State", message=f"Run state request error: {exc}")
+	return {"status": "none", "tasks": []}
 
 
 @frappe.whitelist()
@@ -1290,7 +1770,7 @@ def get_chat_history(session_id: str, limit: int | None = None) -> list[dict]:
 
 
 @frappe.whitelist()
-def disconnect_agent(agent_email):
+def disconnect_agent(agent_email: str | None = None) -> dict:
 	"""Disconnects the agent for the given email by clearing the access token locally."""
 	if not agent_email:
 		return {"success": False}
@@ -1301,14 +1781,10 @@ def disconnect_agent(agent_email):
 	if not doc:
 		return {"success": False}
 
-	# Removed from __Auth directly: Document.save skips empty Password fields,
-	# so clearing the field alone would leave a usable token behind.
-	frappe.db.sql(
-		"delete from `__Auth` where `doctype`='Agent Settings' and `name`=%s and `fieldname`='access_token'",
-		doc.name,
-	)
-	frappe.db.set_value("Agent Settings", doc.name, "access_token", "")
-	frappe.db.commit()
+	# Both credentials go. Clearing only the access token used to leave a
+	# refresh token behind that was still good for weeks, so "disconnect" did
+	# not actually end the session it claimed to end.
+	end_agent_session(doc.email)
 	return {"success": True}
 
 
@@ -1329,7 +1805,7 @@ def delete_agent_account(agent_email: str) -> dict:
 	if not doc:
 		return {"success": False}
 
-	access_token = doc.get_password("access_token", raise_exception=False)
+	access_token = _stored_secret(doc.name, "access_token")
 	user_id = decode_jwt_payload(access_token).get("sub") if access_token else None
 
 	# Fall back to the API key for accounts created before tokens carried a sub.
@@ -1358,7 +1834,7 @@ def delete_agent_account(agent_email: str) -> dict:
 # ---------------- Chat Session Management Endpoints ----------------
 
 @frappe.whitelist()
-def get_chats():
+def get_chats() -> list[dict]:
 	"""Retrieves all chat sessions owned by the logged-in user."""
 	user = frappe.session.user
 	if user == "Guest":
@@ -1373,7 +1849,7 @@ def get_chats():
 
 
 @frappe.whitelist()
-def create_chat(title=None):
+def create_chat(title: str | None = None) -> dict:
 	"""Creates a new chat session and returns it."""
 	user = frappe.session.user
 	if user == "Guest":
@@ -1399,7 +1875,7 @@ def create_chat(title=None):
 
 
 @frappe.whitelist()
-def update_chat_title(session_id, title):
+def update_chat_title(session_id: str, title: str) -> dict:
 	"""Updates the title of a chat session."""
 	if not session_id or not title:
 		frappe.throw(_("Session ID and Title are required."))
@@ -1425,7 +1901,7 @@ def update_chat_title(session_id, title):
 
 
 @frappe.whitelist()
-def delete_chat(session_id):
+def delete_chat(session_id: str) -> dict:
 	"""Deletes a chat session (cascade deletion of messages is handled by the before_delete hook)."""
 	if not session_id:
 		return {"success": False}
@@ -1444,7 +1920,7 @@ def delete_chat(session_id):
 
 
 @frappe.whitelist()
-def create_chat_with_id(session_id, title=None):
+def create_chat_with_id(session_id: str, title: str | None = None) -> dict:
 	"""Creates a new chat session with a pre-defined session_id."""
 	user = frappe.session.user
 	if user == "Guest":
@@ -1482,6 +1958,18 @@ def create_chat_with_id(session_id, title=None):
 
 
 # ─── Utility Helpers ────────────────────────────────────────────────────────
+
+def _asked_for(value) -> bool:
+	"""Whether a switch sent by the browser is on.
+
+	A form field arrives as text, and "false" is a perfectly true string. Every
+	place that reads one of these has to agree on what "on" means, so they all
+	come through here.
+	"""
+	if isinstance(value, bool):
+		return value
+	return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
 
 def _parse_json_list(value) -> list | None:
 	"""Safely parse a JSON string into a list. Returns None if empty or invalid."""
@@ -1585,18 +2073,38 @@ ALLOWED_ACCOUNTANT_EXTENSIONS: frozenset[str] = frozenset({
 	# Accounting and banking interchange formats
 	".ofx", ".qfx", ".qbo", ".qif", ".mt940", ".sta", ".camt", ".aba",
 	".bai", ".bai2", ".edi", ".x12", ".iif", ".xbrl", ".ubl",
-	# Scans and photographed receipts. Exactly the set the platform's vision
-	# path decodes - an image accepted here but absent there is stored and
-	# then silently unreadable.
-	".png", ".jpg", ".jpeg", ".gif", ".webp",
+	# Scans and photographed receipts.
+	".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
 })
+
+#: Every picture format this site accepts.
 _IMAGE_EXTENSIONS: frozenset[str] = frozenset({
+	".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
+})
+
+#: Spreadsheets, which some desks accept and others insist on. Named here so
+#: the browser can size its two separate budgets without a list of its own.
+_EXCEL_EXTENSIONS: frozenset[str] = frozenset({".xlsx", ".xls", ".ods"})
+
+#: The picture formats the agent service's vision path decodes directly.
+#:
+#: Anything outside this set — a TIFF from a desk scanner, a BMP from a Windows
+#: fax tool — is converted to a PNG before it is sent. Those formats used to be
+#: refused: the browser offered them, the upload took them, and the service then
+#: rejected the message. They are ordinary scanner output and there was no
+#: reason for them not to work; a format conversion is not the customer's job.
+_PLATFORM_IMAGE_EXTENSIONS: frozenset[str] = frozenset({
 	".png", ".jpg", ".jpeg", ".gif", ".webp",
 })
 
 #: The whitelisted route every stored attachment URL points at. Storing the
 #: endpoint rather than a filesystem path is what lets the file itself live in
 #: the private store while the chat UI keeps rendering a plain link.
+#: Where the published upload rules are kept between page opens.
+#: The version at the end is part of the key on purpose: an upgrade that adds
+#: a rule must not be answered from a cached copy that predates it.
+_UPLOAD_RULES_CACHE_KEY: str = "accountant_agent::upload_rules::3"
+
 _DOWNLOAD_ENDPOINT: str = (
 	"/api/method/accountant_agent.accountant_agent.page.agent_chat.agent_chat.download_file"
 )
@@ -1718,14 +2226,299 @@ def upload_agent_file() -> dict:
 	os.chmod(upload_dir, 0o700)
 
 	stored_name = f"{uuid.uuid4().hex[:12]}_{os.path.basename(filename)}"
-	with open(os.path.join(upload_dir, stored_name), "wb") as handle:
+	stored_path = os.path.join(upload_dir, stored_name)
+	with open(stored_path, "wb") as handle:
 		handle.write(content)
 
+	# NOTHING IS READ HERE. An upload is stored and that is all. Reading belongs
+	# to the worker that runs the message, which is the only place that knows
+	# whether the customer asked for it, and the only place that can say so
+	# while it happens. Reading at upload time also read files that were then
+	# taken back out of the basket and never sent.
 	return {
 		"file_url": f"{_DOWNLOAD_ENDPOINT}?file_url={AGENT_UPLOAD_DIR}/{stored_name}",
 		"filename": filename,
 		"is_image": extension in _IMAGE_EXTENSIONS,
 	}
+
+
+#: What the chat listens on while it waits for its attachments to be read.
+SCAN_PROGRESS_EVENT: str = "agent_scan_progress"
+
+#: How long a cancellation is remembered. It is cleared at the start of every
+#: turn, so this only sweeps up flags for turns that never ran.
+_CANCELLED_TTL_SECONDS: int = 3600
+
+
+def _cancelled_key(session_id: str) -> str:
+	return f"accountant_agent::cancelled::{session_id}"
+
+
+def remember_the_cancellation(session_id: str) -> None:
+	"""Record that this turn was stopped, for the worker running it to see.
+
+	A CANCELLATION BEFORE THE REQUEST LEAVES HAS NOWHERE ELSE TO LAND. The
+	platform cancels a run it already knows about; while the documents are still
+	being read there is no run — so pressing stop was accepted, said "Cancelled"
+	in the chat, and then the turn went out anyway and answered a question the
+	customer had withdrawn.
+	"""
+	try:
+		_cache().set_value(_cancelled_key(session_id), 1,
+						   expires_in_sec=_CANCELLED_TTL_SECONDS)
+	except Exception:
+		pass
+
+
+def forget_the_cancellation(session_id: str) -> None:
+	"""Clear it, which is the first thing every new turn does.
+
+	A flag that outlives its own turn stops the NEXT message instead — a bug
+	this product has had once already, in the run state.
+	"""
+	try:
+		_cache().delete_value(_cancelled_key(session_id))
+	except Exception:
+		pass
+
+
+def turn_was_cancelled(session_id: str) -> bool:
+	"""Whether the customer has stopped this turn since they sent it."""
+	try:
+		# `expires=True`: this key has an expiry, and without saying so Frappe
+		# answers from the worker's own memory for the rest of the job — which
+		# for a turn that reads ten pages is exactly the window that matters.
+		return bool(_cache().get_value(_cancelled_key(session_id), expires=True))
+	except Exception:
+		return False
+
+
+def read_the_attachments(file_urls, owner: str, session_id: str, watcher: str) -> None:
+	"""Read this message's pictures and scans, and say so while it happens.
+
+	ONE WORKER OWNS THE WHOLE TURN. The customer presses send and their message
+	appears at once; this worker then reads the documents, sends them, and
+	waits for the answer. Nothing is asked of a second queue and nothing is
+	waited for in the browser, so a reading that takes two minutes is two
+	minutes of a background worker — never a message the customer cannot send
+	and never an ERP page anybody else is waiting on.
+
+	IT SAYS NOTHING ABOUT WORK IT IS NOT DOING. A PDF that already carries its
+	own text, a spreadsheet, a picture read on an earlier message — none of
+	them are announced, because announcing them told a customer their typed
+	invoice was being scanned and then that it had no words in it.
+	"""
+	# Asked once per file and remembered: for a PDF this opens the document and
+	# reads what text it already carries, which is not work to repeat while
+	# reporting on it.
+	waiting = []
+	for url in file_urls or []:
+		path = resolve_agent_upload_path(url, owner)
+		pages = ocr.pages_to_read(path) if path else 0
+		if pages:
+			waiting.append((path, pages))
+
+	if not waiting:
+		return
+
+	def say(position: int, filename: str, page: int, pages: int) -> None:
+		frappe.publish_realtime(
+			event=SCAN_PROGRESS_EVENT,
+			message={
+				"session_id": session_id,
+				"filename": filename,
+				"file": position,
+				"files": len(waiting),
+				"page": page,
+				"pages": max(pages, 1),
+			},
+			user=watcher,
+		)
+
+	try:
+		for position, (path, pages) in enumerate(waiting, start=1):
+			# Between files, because a document is read in one go: the customer
+			# who pressed stop waits out the page in front of them, never the
+			# other nine.
+			if turn_was_cancelled(session_id):
+				return
+			shown = _original_filename(os.path.basename(path))
+			say(position, shown, 0, pages)
+			ocr.read_upload(
+				path,
+				on_progress=lambda _stored, page, pages, at=position, name=shown: (
+					say(at, name, page, pages)
+				),
+			)
+	finally:
+		# ALWAYS, so the chat never keeps a bar in front of a customer for work
+		# that has stopped. A reading that fails still lets the message go: the
+		# picture is simply sent as it is.
+		frappe.publish_realtime(
+			event=SCAN_PROGRESS_EVENT,
+			message={"session_id": session_id, "finished": True},
+			user=watcher,
+		)
+
+
+def build_upload_parts(file_urls, user: str, scan: bool = False) -> tuple:
+	"""What actually travels for each attachment, and the handles to close after.
+
+	`scan` is the customer's own choice, made with the "Scan & Extract Data"
+	button beside the message box. IT, AND NOTHING ELSE, DECIDES.
+
+	    Reading a picture is not always what somebody wants. An accountant
+	    attaching a photograph of a whiteboard, a chart to look at, or a
+	    screenshot of an error wants the agent to SEE it — turning it into a
+	    wall of half-recognised words is worse than useless, and there was no
+	    way to say so. Now there is a button, and when it is off every file
+	    travels exactly as it was sent, whatever we might have read from it.
+
+	A PICTURE OF AN INVOICE TRAVELS AS ITS WORDS, NOT AS A PICTURE.
+	    The text was read on this server, moments ago, by the same worker that
+	    is about to send it. Sending it instead of the image is faster, costs a
+	    fraction as much, and — the part that matters in accounting — a
+	    purpose-built reader gets a figure right far more often than a language
+	    model looking at a photograph. The picture never leaves the practice.
+
+	A PICTURE WITH NO WORDS IN IT TRAVELS AS A PICTURE.
+	    Then it is not a document, and its extracted text would be noise. The
+	    model looks at it directly, exactly as before. Every upload arrives as
+	    one thing or the other; nothing is ever silently left behind.
+
+	NOTHING HERE WAITS FOR ANYTHING. The reading is finished before this is
+	called. If a reading is missing then it was never asked for, or it failed
+	and said so, and either way the file itself is what should be sent.
+	"""
+	parts: list = []
+	handles: list = []
+
+	try:
+		return _upload_parts(file_urls, user, parts, handles, scan)
+	except Exception:
+		for handle in handles:
+			try:
+				handle.close()
+			except Exception:
+				pass
+		raise
+
+
+def _reading_travels_as(display_name: str, already_used: set) -> str:
+	"""The name a reading is sent under: the document's own, ending in .txt.
+
+	"invoice_04.png" becomes "invoice_04.txt" and not "invoice_04.png.txt",
+	which read as a mistake to everyone who saw it — the customer, and a desk
+	that quoted it back in a letter. Two documents in one message whose names
+	differ only by their kind get numbered rather than merged.
+	"""
+	stem = os.path.splitext(display_name)[0] or display_name
+	name = f"{stem}.txt"
+	count = 2
+	while name.lower() in already_used:
+		name = f"{stem} ({count}).txt"
+		count += 1
+	already_used.add(name.lower())
+	return name
+
+
+def _upload_parts(
+	file_urls, user: str, parts: list, handles: list, scan: bool = False,
+) -> tuple:
+	"""The body of `build_upload_parts`, separated so a failure can clean up."""
+	used_names: set = set()
+
+	for url in file_urls or []:
+		# Resolved through the same owner-scoped helper the download endpoint
+		# uses, so a session_id that names another user's attachment forwards
+		# nothing rather than leaking it.
+		file_path = resolve_agent_upload_path(url, user)
+		if not file_path:
+			continue
+
+		display_name = _original_filename(os.path.basename(file_path))
+		extracted = ocr.reading_of(file_path) if scan else None
+
+		if extracted:
+			# THE PICTURE IT CAME FROM IS NAMED IN THE FIRST LINE, so a desk
+			# reading the words can say which document a figure came off, and a
+			# customer asking about "the invoice photo" is understood.
+			body = f'Text read from the uploaded file "{display_name}".\n\n{extracted}'
+			payload = io.BytesIO(body.encode("utf-8"))
+			handles.append(payload)
+			parts.append(("files", (_reading_travels_as(display_name, used_names), payload)))
+			continue
+
+		converted = _as_a_picture_the_service_can_read(file_path, display_name)
+		if converted:
+			handles.append(converted[1])
+			parts.append(("files", converted))
+			continue
+
+		handle = open(file_path, "rb")
+		handles.append(handle)
+		parts.append(("files", (display_name, handle)))
+
+	return parts, handles
+
+
+def _as_a_picture_the_service_can_read(file_path: str, display_name: str):
+	"""A PNG copy of a picture in a format the service does not decode, or None.
+
+	None means "send the file as it is", which is the answer for everything that
+	is not a picture and for the picture formats that already work.
+	"""
+	extension = os.path.splitext(display_name.lower())[1]
+	if extension not in _IMAGE_EXTENSIONS or extension in _PLATFORM_IMAGE_EXTENSIONS:
+		return None
+
+	try:
+		from PIL import Image
+
+		payload = io.BytesIO()
+		with Image.open(file_path) as picture:
+			picture.convert("RGB").save(payload, format="PNG")
+		payload.seek(0)
+	except Exception as exc:
+		frappe.log_error(
+			title="Accountant Agent: picture could not be converted",
+			message=f"{display_name} could not be turned into a PNG: {exc}",
+		)
+		return None
+
+	return (f"{display_name}.png", payload)
+
+
+
+@frappe.whitelist()
+def get_upload_rules() -> dict:
+	"""The upload limits, so the browser does not keep its own copy of them.
+
+	The browser used to carry its own list of accepted file types and its own
+	file count. Both had drifted: the file picker offered documents this server
+	then refused, so a customer chose a file, watched it upload, and was told
+	afterwards that it was not allowed. A copy of a rule is a rule that will
+	disagree with the original eventually.
+
+	Read once when the chat page opens, and cached: the answer is the same for
+	every user of the site and changes only when the app is upgraded, so
+	rebuilding it per page open is work with no reader.
+	"""
+	_assert_signed_in()
+
+	cached = frappe.cache().get_value(_UPLOAD_RULES_CACHE_KEY, expires=True)
+	if cached:
+		return cached
+
+	rules = {
+		"extensions": sorted(ALLOWED_ACCOUNTANT_EXTENSIONS),
+		"image_extensions": sorted(_IMAGE_EXTENSIONS),
+		"excel_extensions": sorted(_EXCEL_EXTENSIONS),
+		"max_files": get_max_upload_files(),
+		"max_file_size_mb": MAX_UPLOAD_SIZE_BYTES // (1024 * 1024),
+	}
+	frappe.cache().set_value(_UPLOAD_RULES_CACHE_KEY, rules, expires_in_sec=3600)
+	return rules
 
 
 @frappe.whitelist()

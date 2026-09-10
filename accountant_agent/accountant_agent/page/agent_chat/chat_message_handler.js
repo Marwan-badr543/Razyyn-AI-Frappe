@@ -77,6 +77,24 @@ class ChatMessageHandler {
 		if (!session_id) return;
 
 		let message = this.chat.textarea.val();
+
+		// Wait for anything still uploading before reading the basket.
+		//
+		// Pressing Enter while files were still going up used to send only the
+		// ones that happened to have finished, and the rest were dropped without
+		// a word. With twenty files allowed that stopped being a rare race and
+		// became the normal case.
+		if (this.chat.file_upload_handler && this.chat.file_upload_handler.has_pending_uploads()) {
+			frappe.show_alert({ message: __('Finishing your uploads…'), indicator: 'blue' }, 3);
+			await this.chat.file_upload_handler.wait_for_uploads();
+		}
+
+		// NOTHING WAITS FOR THE READING HERE. The message goes now, and the
+		// worker that runs it reads the documents first and says how far it has
+		// got as it does. Holding the send button until a ten-page scan had
+		// been read left the customer looking at their own typing for two
+		// minutes with nothing to press.
+
 		let has_attachments = this.chat.file_upload_handler && this.chat.file_upload_handler.has_attachments();
 
 		if ((!message || message.trim() === '') && !has_attachments) return;
@@ -88,6 +106,9 @@ class ChatMessageHandler {
 
 		let file_urls = null;
 		let attachment_markers = '';
+		// The switch as it stands NOW decides what travels — not whether a
+		// reading happens to have been done earlier.
+		let scan = !!(this.chat.file_upload_handler && this.chat.file_upload_handler.scan_enabled);
 
 		if (has_attachments) {
 			file_urls = this.chat.file_upload_handler.get_file_urls();
@@ -96,7 +117,7 @@ class ChatMessageHandler {
 
 		// Reset Textarea
 		this.chat.textarea.val('');
-		this.chat.textarea.css('height', '44px');
+		this.chat.textarea.css('height', '46px');
 		this.chat.layout.find('.agent-char-counter').text('0 / 10000');
 
 		if (this.chat.file_upload_handler) {
@@ -104,10 +125,10 @@ class ChatMessageHandler {
 		}
 
 		let full_message = attachment_markers + (message || '');
-		await this.send_chat_message(full_message.trim(), file_urls);
+		await this.send_chat_message(full_message.trim(), file_urls, scan);
 	}
 
-	async send_chat_message(message, file_urls = null) {
+	async send_chat_message(message, file_urls = null, scan = false) {
 		let session_id = this.chat.session_manager.session_id;
 		if (!session_id) return;
 
@@ -168,9 +189,10 @@ class ChatMessageHandler {
 		}
 
 		this.processing_sessions.add(active_session_id);
-		// Falls back to 'auto', never to a named desk: without a selector the
-		// server should choose, not be told the general Q&A desk was asked for.
-		let agent_type = this.chat.agent_selector ? this.chat.agent_selector.get_selected_agent() : 'auto';
+		// Always 'auto': the customer talks to one entity — Razyyn AI — and the
+		// manager on the server decides which specialists do the work. The field
+		// survives on the wire for backend compatibility only.
+		let agent_type = 'auto';
 
 		try {
 			let agent_email = localStorage.getItem('connected_agent_email');
@@ -181,7 +203,8 @@ class ChatMessageHandler {
 					session_id: active_session_id,
 					agent_email: agent_email,
 					agent_type: agent_type,
-					file_urls: file_urls ? JSON.stringify(file_urls) : null
+					file_urls: file_urls ? JSON.stringify(file_urls) : null,
+					scan: scan ? 1 : 0
 				}
 			);
 
@@ -254,19 +277,30 @@ class ChatMessageHandler {
 		}
 	}
 
+	// THE COMPOSER IS CLOSED WHILE THE MANAGER WORKS.
+	//
+	// One request per session at a time: the customer sends, watches the
+	// checklist, and speaks again when the work stops — either because it
+	// finished, because it is waiting on them (a question or an approval), or
+	// because they cancelled it. Every one of those puts the button back to
+	// 'send' and reopens the composer, so nothing here needs to know which.
 	set_button_state(state) {
 		let btn = this.chat.layout.find('#agent-send-trigger');
 		if (state === 'cancel') {
 			btn.removeClass('agent-send-btn').addClass('agent-cancel-btn');
 			btn.attr('title', __('Cancel Execution'));
 			btn.html(`<svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>`);
-			this.chat.textarea.prop('disabled', false);
+			this.chat.textarea.prop('disabled', true);
+			this.chat.textarea.attr('placeholder', __('Working — you can cancel at any time.'));
+			this.chat.layout.find('.agent-attach-btn').prop('disabled', true).css('opacity', 0.5);
 		} else {
 			btn.removeClass('agent-cancel-btn').addClass('agent-send-btn');
 			btn.attr('title', __('Send Message'));
 			btn.html(`<svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>`);
 			btn.prop('disabled', false).css('opacity', 1);
 			this.chat.textarea.prop('disabled', false);
+			this.chat.textarea.attr('placeholder', __('Type your financial question or query here...'));
+			this.chat.layout.find('.agent-attach-btn').prop('disabled', false).css('opacity', 1);
 			this.chat.textarea.focus();
 			this.chat.textarea.trigger('input');
 		}
@@ -294,6 +328,7 @@ class ChatMessageHandler {
 			delete this.chat.active_streams[session_id];
 		}
 
+		this.chat.ui_manager.clear_todo_panels(this.chat.msg_box);
 		this.chat.ui_manager.hide_typing_indicator(this.chat.msg_box);
 
 		if (this.chat.popup_container) {
@@ -324,7 +359,12 @@ class ChatMessageHandler {
 		};
 
 		if (this.chat.session_manager.session_id === session_id) {
-			this.set_button_state('cancel');
+			// A QUESTION MEANS THE AGENT IS WAITING FOR THE CUSTOMER.
+			// The composer stays open here on purpose: the picker offers the
+			// options, and typing an answer instead of choosing one must always
+			// be possible. This used to switch the button to 'cancel', which —
+			// now that the composer closes while work runs — would have locked
+			// the customer out of answering the very question on screen.
 			this.render_popup_question(session_id);
 		}
 	}

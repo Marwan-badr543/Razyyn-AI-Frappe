@@ -1,19 +1,93 @@
-{% include "accountant_agent/accountant_agent/page/agent_chat/agent_selector.js" %}
 {% include "accountant_agent/accountant_agent/page/agent_chat/file_upload_handler.js" %}
 {% include "accountant_agent/accountant_agent/page/agent_chat/chat_attachments_renderer.js" %}
 {% include "accountant_agent/accountant_agent/page/agent_chat/chat_ui_manager.js" %}
 {% include "accountant_agent/accountant_agent/page/agent_chat/chat_session_manager.js" %}
 {% include "accountant_agent/accountant_agent/page/agent_chat/chat_message_handler.js" %}
 
+/**
+ * The Razyyn brand mark — the low-poly "R" from the company logo, drawn as
+ * vector facets. It is inline rather than an <img> so it stays crisp at any
+ * size, costs no extra request, and sits on the page's own background in both
+ * the light and the dark theme.
+ */
+const RAZYYN_BRAND_MARK = `
+	<span class="agent-brand-mark">
+		<svg class="agent-brand-mark-svg" viewBox="0 0 920 1002" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+			<defs>
+				<path id="razyyn-mark-body" d="M361,0L568,1L882,161L883,495L652,633L919,1000L612,1001L294,543L293,829L0,999L0,3L361,0Z M294,163L641,340L296,538L294,163Z" fill-rule="evenodd" clip-rule="evenodd"/>
+				<clipPath id="razyyn-mark-clip"><use href="#razyyn-mark-body"/></clipPath>
+			</defs>
+			<use href="#razyyn-mark-body" fill="#1e40af"/>
+			<g clip-path="url(#razyyn-mark-clip)">
+				<polygon points="2,2 25,2 34,21 284,156 294,168 294,187 271,188 259,200 9,494 2,494 2,2" fill="#1c348a" stroke="#1c348a" stroke-width="8"/>
+				<polygon points="285,187 294,192 274,212 31,912 13,961 2,966 2,495 19,487 260,200 285,187" fill="#3050af" stroke="#3050af" stroke-width="8"/>
+				<polygon points="294,193 294,535 300,536 300,552 296,547 293,560 275,569 31,951 14,961 275,212 294,193" fill="#3d90ce" stroke="#3d90ce" stroke-width="8"/>
+				<polygon points="26,2 544,3 532,20 294,165 34,20 26,2" fill="#3682c8" stroke="#3682c8" stroke-width="8"/>
+				<polygon points="289,561 293,829 2,999 2,967 30,954 249,609 289,561" fill="#263f96" stroke="#263f96" stroke-width="8"/>
+				<polygon points="883,175 883,495 657,627 653,618 854,215 883,175" fill="#29c3e7" stroke="#29c3e7" stroke-width="8"/>
+				<polygon points="319,568 331,570 631,800 617,975 608,993 326,591 312,570 319,568" fill="#284299" stroke="#284299" stroke-width="8"/>
+				<polygon points="392,106 604,162 642,332 301,165 309,152 392,106" fill="#284298" stroke="#284298" stroke-width="8"/>
+				<polygon points="882,170 853,215 653,617 647,581 648,380 635,344 859,177 882,170" fill="#409dd2" stroke="#409dd2" stroke-width="8"/>
+				<polygon points="318,548 653,630 631,799 331,569 311,569 301,552 318,548" fill="#3052ad" stroke="#3052ad" stroke-width="8"/>
+				<polygon points="633,345 641,362 503,593 321,547 301,551 305,533 633,345" fill="#297bc3" stroke="#297bc3" stroke-width="8"/>
+				<polygon points="634,811 886,976 906,977 917,999 611,999 634,811" fill="#25a7de" stroke="#25a7de" stroke-width="8"/>
+				<polygon points="655,638 905,976 886,975 634,810 646,654 655,638" fill="#22d0f2" stroke="#22d0f2" stroke-width="8"/>
+				<polygon points="868,153 883,169 859,176 673,320 643,332 610,166 849,163 868,153" fill="#8de3f3" stroke="#8de3f3" stroke-width="8"/>
+				<polygon points="572,3 867,153 849,162 609,166 572,28 572,3" fill="#3ad9f1" stroke="#3ad9f1" stroke-width="8"/>
+				<polygon points="640,363 647,380 647,609 656,628 505,593 640,363" fill="#53abd9" stroke="#53abd9" stroke-width="8"/>
+				<polygon points="545,2 571,2 571,28 604,161 396,106 532,21 545,2" fill="#2d62af" stroke="#2d62af" stroke-width="8"/>
+			</g>
+		</svg>
+	</span>
+`;
+
+/**
+ * The letter the mark stands in for. The mark takes that letter's place in the
+ * name, so it reads as the first letter of the word rather than as an icon
+ * sitting next to it.
+ */
+const RAZYYN_MARK_LETTER = 'R';
+
+/**
+ * Build the brand lockup in the page head: the mark, then the rest of the name.
+ *
+ * The title drops its leading "R" because the mark supplies it — together they
+ * spell the name as one word. A translated name that does not begin with that
+ * letter keeps all of its letters; the mark never chops a letter it is not
+ * standing in for. The browser tab and the title tooltip keep the full name.
+ *
+ * The mark goes in as a *sibling* of `.title-text`, never a child: Frappe's
+ * `page.set_title()` replaces that element's contents, which would silently
+ * wipe a mark placed inside it. Re-running this is safe — the leading letter is
+ * already gone and any previous mark is removed first — so a re-rendered header
+ * never ends up with two marks or a shortened name.
+ */
+function render_brand_lockup(wrapper) {
+	let title = $(wrapper).find('.title-area .title-text');
+	let title_row = title.parent();
+	let name = title.text();
+
+	if (name.startsWith(RAZYYN_MARK_LETTER)) {
+		title.text(name.slice(RAZYYN_MARK_LETTER.length));
+	}
+
+	title_row.addClass('agent-brand-lockup');
+	title_row.find('.agent-brand-mark').remove();
+	title_row.prepend(RAZYYN_BRAND_MARK);
+}
+
 frappe.pages['agent-chat'].on_page_load = function (wrapper) {
+	try {
+		delete localStorage['_page:agent-chat'];
+	} catch (e) {}
+
 	let page = frappe.ui.make_app_page({
 		parent: wrapper,
 		title: __('Razyyn AI'),
 		single_column: true
 	});
 
-	// Add blinking dot to the left of the page title
-	$(wrapper).find('.title-text').prepend('<span class="agent-title-dot"></span>');
+	render_brand_lockup(wrapper);
 
 	// Dynamically load Mermaid from CDN to support all Frappe versions (including v14)
 	if (!window.mermaid) {
@@ -124,7 +198,6 @@ class AccountantAgentChat {
 		this.active_streams = {};
 
 		// Instantiate Sub-Managers (Separation of Responsibilities)
-		this.agent_selector = null;
 		this.file_upload_handler = null;
 		this.attachments_renderer = new ChatAttachmentsRenderer();
 		this.ui_manager = new ChatUIManager(this);
@@ -134,6 +207,22 @@ class AccountantAgentChat {
 		frappe.realtime.on("agent_clarification_requested", (data) => {
 			if (data && data.session_id) {
 				this.message_handler.show_clarification_popup(data.questions, data.session_id);
+			}
+		});
+
+		// How far the reading of this message's documents has got. Sent by the
+		// same worker that is running the turn, once per page, and shown only
+		// on the conversation it belongs to — a second chat open in another tab
+		// must not draw somebody else's progress.
+		frappe.realtime.on("agent_scan_progress", (data) => {
+			if (!data || !data.session_id) return;
+			if (data.session_id !== this.session_manager.session_id) return;
+			if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
+
+			if (data.finished) {
+				this.ui_manager.hide_reading_progress(this.msg_box);
+			} else {
+				this.ui_manager.show_reading_progress(this.msg_box, data);
 			}
 		});
 
@@ -273,6 +362,31 @@ class AccountantAgentChat {
 			}
 		});
 
+		frappe.realtime.on("agent_todo_update", (data) => {
+			if (data && data.session_id) {
+				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
+				this.active_streams = this.active_streams || {};
+				if (!this.active_streams[data.session_id]) {
+					this.active_streams[data.session_id] = {
+						bubble_id: `stream-${this.generate_uuid()}`,
+						accumulated: "",
+						reasoning: "",
+						steps: [],
+						status: "",
+						start_time: Date.now(),
+						elapsed_seconds: 0
+					};
+					this.start_stream_timer(data.session_id);
+				}
+				let stream = this.active_streams[data.session_id];
+				stream.todo = { status: data.status || '', tasks: data.tasks || [] };
+
+				if (data.session_id === this.session_manager.session_id) {
+					this.ui_manager.render_todo_list(this.msg_box, stream.bubble_id, stream.todo);
+				}
+			}
+		});
+
 		frappe.realtime.on("agent_message_done", async (data) => {
 			if (data && data.session_id) {
 				if (this.message_handler.cancelled_sessions.has(data.session_id)) {
@@ -336,6 +450,7 @@ class AccountantAgentChat {
 				}
 
 				if (data.session_id === active_session_id) {
+					this.ui_manager.clear_todo_panels(this.msg_box);
 					this.ui_manager.hide_typing_indicator(this.msg_box);
 					this.message_handler.set_button_state('send');
 				}
@@ -364,6 +479,7 @@ class AccountantAgentChat {
 				}
 
 				if (data.session_id === active_session_id) {
+					this.ui_manager.clear_todo_panels(this.msg_box);
 					this.ui_manager.hide_typing_indicator(this.msg_box);
 					this.message_handler.set_button_state('send');
 				}
@@ -552,9 +668,7 @@ class AccountantAgentChat {
 						<div class="agent-input-card">
 							<textarea class="agent-textarea" placeholder="${__('Type your financial question or query here...')}" id="agent-input-msg" maxlength="10000"></textarea>
 							<div class="agent-input-footer">
-								<div class="agent-input-footer-left">
-									<div class="agent-selector-container"></div>
-								</div>
+								<div class="agent-input-footer-left"></div>
 								<div class="agent-input-footer-right">
 									<div class="agent-char-counter">0 / 10000</div>
 									<button class="agent-send-btn" id="agent-send-trigger" title="${__('Send Message')}">
@@ -575,10 +689,6 @@ class AccountantAgentChat {
 		this.msg_box = this.layout.find('#agent-msg-box');
 		this.textarea = this.layout.find('#agent-input-msg');
 		this.popup_container = this.layout.find('.agent-clarification-popup');
-
-		// Initialize Agent Selector UI
-		this.agent_selector = new AgentSelector({ default_agent: 'ask' });
-		this.agent_selector.render(this.layout.find('.agent-selector-container'));
 
 		// Initialize File Upload Handler
 		this.file_upload_handler = new FileUploadHandler(this);
@@ -699,16 +809,25 @@ class AccountantAgentChat {
 			d.show();
 		});
 
-		this.textarea.on('input', () => {
+		this.auto_resize_textarea = () => {
+			if (!this.textarea || !this.textarea.length) return;
 			this.textarea.css('height', 'auto');
-			this.textarea.css('height', (this.textarea[0].scrollHeight) + 'px');
-			let length = this.textarea.val().length;
+			let scroll_h = this.textarea[0].scrollHeight || 46;
+			let new_height = Math.max(46, Math.min(scroll_h, 300));
+			this.textarea.css('height', new_height + 'px');
+			let length = (this.textarea.val() || '').length;
 			this.layout.find('.agent-char-counter').text(`${length} / 10000`);
+		};
+
+		this.textarea.on('input', () => {
+			this.auto_resize_textarea();
 		});
 
 		this.textarea.on('keydown', (e) => {
 			if (e.which === 13 && !e.shiftKey) {
 				e.preventDefault();
+				// While the manager is working the composer is closed and the
+				// button is the cancel control, so Enter has nothing to send.
 				let btn = this.layout.find('#agent-send-trigger');
 				if (!btn.hasClass('agent-cancel-btn')) {
 					this.message_handler.send_user_message();

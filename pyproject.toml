@@ -3,7 +3,7 @@ name = "accountant_agent"
 authors = [
     { name = "Marwan Badr", email = "marwanbadr@gmail.com"}
 ]
-description = "acc agent"
+description = "Enterprise AI-Powered Accounting Assistant Agent for Frappe & ERPNext v15"
 requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]
@@ -13,12 +13,22 @@ dependencies = [
     "python-docx",
     "pandas",
     "python-pptx",
-    "pillow"
+    "pillow",
+    "requests",
+    # Reading the words out of photographed and scanned documents. Both need
+    # system packages the Python wheels do not carry: tesseract-ocr with the
+    # eng and ara language data, and poppler-utils.
+    "pytesseract",
+    "pdf2image"
 ]
 
 [build-system]
 requires = ["flit_core >=3.4,<4"]
 build-backend = "flit_core.buildapi"
+
+[tool.bench.frappe-dependencies]
+frappe = ">=15.0.0,<16.0.0"
+erpnext = ">=15.0.0,<16.0.0"
 
 # These dependencies are only installed when developer mode is enabled
 [tool.bench.dev-dependencies]
