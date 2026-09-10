@@ -210,6 +210,22 @@ class AccountantAgentChat {
 			}
 		});
 
+		// How far the reading of this message's documents has got. Sent by the
+		// same worker that is running the turn, once per page, and shown only
+		// on the conversation it belongs to — a second chat open in another tab
+		// must not draw somebody else's progress.
+		frappe.realtime.on("agent_scan_progress", (data) => {
+			if (!data || !data.session_id) return;
+			if (data.session_id !== this.session_manager.session_id) return;
+			if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
+
+			if (data.finished) {
+				this.ui_manager.hide_reading_progress(this.msg_box);
+			} else {
+				this.ui_manager.show_reading_progress(this.msg_box, data);
+			}
+		});
+
 		frappe.realtime.on("agent_message_chunk", (data) => {
 			if (data && data.session_id) {
 				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;

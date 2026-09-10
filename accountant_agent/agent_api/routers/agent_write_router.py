@@ -94,7 +94,10 @@ def _error(exc: AgentWriteError) -> dict:
 
 def _unexpected(context: str) -> dict:
     """Log the detail, return nothing revealing."""
-    frappe.log_error(title=f"Agent write gateway: {context}", message=frappe.get_traceback())
+    frappe.log_error(
+        title="Agent write gateway",
+        message=f"{context}\n\n{frappe.get_traceback()}",
+    )
     frappe.local.response.http_status_code = 500
     return {
         "error": _("The request could not be completed."),

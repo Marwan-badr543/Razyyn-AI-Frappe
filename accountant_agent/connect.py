@@ -188,10 +188,10 @@ def _platform_request(
     error that reads like an authentication failure.
     """
     from accountant_agent.accountant_agent.page.agent_chat.agent_chat import (
-        refresh_agent_token_on_server, save_agent_settings,
+        end_agent_session, get_agent_access_token, refresh_agent_token_on_server,
     )
 
-    access_token = doc.get_password("access_token", raise_exception=False)
+    access_token = get_agent_access_token(doc.email)
     if not access_token:
         frappe.throw(
             _("Please sign in to the Accountant Agent from the chat page first."),
@@ -212,7 +212,7 @@ def _platform_request(
         if response.status_code == 401:
             refreshed = refresh_agent_token_on_server(doc.email)
             if not refreshed:
-                save_agent_settings(doc.email, access_token="", refresh_token="")
+                end_agent_session(doc.email)
                 frappe.throw(
                     _("Your Accountant Agent session has expired. Please sign in "
                       "again from the chat page."),

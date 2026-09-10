@@ -854,6 +854,65 @@ class ChatUIManager {
 		msg_box.find('#agent-typing-row').remove();
 	}
 
+	/** Show how far the reading of this message's documents has got.
+	 *
+	 * WHY THERE IS A BAR AT ALL. Reading a ten-page scan takes half a minute,
+	 * and half a minute of three bouncing dots is indistinguishable from a
+	 * product that has stopped working. A bar that moves is the difference
+	 * between "it is working" and "it is broken", and it costs one line from
+	 * the worker per page.
+	 *
+	 * It sits where the answer will be, inside the same bubble as the dots, so
+	 * the chat does not jump when the reading finishes and the answer starts.
+	 */
+	show_reading_progress(msg_box, report) {
+		if (!msg_box || !msg_box.length) return;
+
+		let $row = msg_box.find('#agent-typing-row');
+		if (!$row.length) {
+			this.show_typing_indicator(msg_box);
+			$row = msg_box.find('#agent-typing-row');
+		}
+
+		let $bubble = $row.find('.agent-msg-bubble');
+		let $bar = $bubble.find('.agent-reading');
+		if (!$bar.length) {
+			$bubble.prepend(`
+				<div class="agent-reading">
+					<div class="agent-reading-line">
+						<span class="agent-reading-what"></span>
+						<span class="agent-reading-count"></span>
+					</div>
+					<div class="agent-reading-track"><div class="agent-reading-fill"></div></div>
+				</div>
+			`);
+			$bar = $bubble.find('.agent-reading');
+		}
+
+		let files = Math.max(report.files || 1, 1);
+		let pages = Math.max(report.pages || 1, 1);
+		let page = Math.min(Math.max(report.page || 0, 0), pages);
+		let position = Math.min(Math.max(report.file || 1, 1), files);
+		// Whole files already behind us, plus how far into this one we are.
+		let done = ((position - 1) + (page / pages)) / files;
+
+		// The name on the left, where it can be shortened without losing its
+		// beginning; the counting on the right, where it must never be cut.
+		let counted = [];
+		if (pages > 1) counted.push(__('page {0} of {1}', [Math.max(page, 1), pages]));
+		if (files > 1) counted.push(__('file {0} of {1}', [position, files]));
+
+		$bar.find('.agent-reading-what').text(__('Reading {0}', [report.filename || '']));
+		$bar.find('.agent-reading-count').text(counted.join(' · '));
+		$bar.find('.agent-reading-fill').css('width', Math.round(done * 100) + '%');
+		this.scroll_to_bottom(msg_box);
+	}
+
+	hide_reading_progress(msg_box) {
+		if (!msg_box || !msg_box.length) return;
+		msg_box.find('.agent-reading').remove();
+	}
+
 	is_near_bottom(el, threshold = 60) {
 		if (!el || !el.length || !el[0]) return false;
 		let dom_el = el[0];
