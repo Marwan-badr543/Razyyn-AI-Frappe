@@ -173,11 +173,12 @@ def get_user_usage(email: str) -> dict:
     # so a customer whose plan was nearly spent was shown 0% and had no warning
     # before their next request was refused.
     from accountant_agent.accountant_agent.page.agent_chat.agent_chat import (
-        get_agent_access_token, refresh_agent_token_on_server,
+        get_agent_access_token,
+        refresh_agent_token_on_server,
     )
 
     access_token = get_agent_access_token(email)
-    user_id: Optional[str] = None
+    user_id: str | None = None
     if access_token:
         user_id = decode_jwt_payload(access_token).get("sub")
 
@@ -188,7 +189,7 @@ def get_user_usage(email: str) -> dict:
     if not user_id:
         return zero
 
-    def _ask(token: Optional[str]) -> requests.Response:
+    def _ask(token: str | None) -> requests.Response:
         headers: dict = {"Authorization": f"Bearer {token}"} if token else {}
         return requests.get(
             f"{get_agent_server_url()}/users/{user_id}/usage",

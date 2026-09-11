@@ -20,7 +20,6 @@ from frappe.model.document import Document
 from frappe.utils.password import get_decrypted_password
 
 from accountant_agent import ocr
-
 from accountant_agent.accountant_agent.doctype.agent_settings.agent_settings import (
 	decode_jwt_payload,
 	get_agent_server_url,
@@ -243,7 +242,7 @@ def _renewal_lock_key(settings_name: str) -> str:
 	return _cache().make_key(f"accountant_agent::token_renewal::{settings_name}")
 
 
-def _stored_secret(settings_name: str, fieldname: str) -> Optional[str]:
+def _stored_secret(settings_name: str, fieldname: str) -> str | None:
 	"""Read one encrypted field straight from storage, past every cache.
 
 	`frappe.get_doc` can hand back a document another worker's write has already
@@ -258,7 +257,7 @@ def _stored_secret(settings_name: str, fieldname: str) -> Optional[str]:
 		return None
 
 
-def _token_seconds_left(token: Optional[str]) -> float:
+def _token_seconds_left(token: str | None) -> float:
 	"""Seconds until this access token expires; 0 for anything unusable.
 
 	The expiry is read from the token the platform issued, not tracked
@@ -384,7 +383,7 @@ def _exchange_refresh_token(settings_name: str, email: str) -> tuple:
 	return (RENEWED, new_access)
 
 
-def _usable(token: Optional[str], refused: Optional[str]) -> bool:
+def _usable(token: str | None, refused: str | None) -> bool:
 	"""Whether a stored token can be handed out.
 
 	`refused` is a token the platform has just rejected. It may still have
@@ -399,7 +398,7 @@ def _usable(token: Optional[str], refused: Optional[str]) -> bool:
 
 
 def _renew_access_token(
-	settings_name: str, email: str, refused: Optional[str] = None,
+	settings_name: str, email: str, refused: str | None = None,
 ) -> tuple:
 	"""Renew once, site-wide, however many workers ask at the same moment.
 
@@ -436,7 +435,7 @@ def _renew_access_token(
 			return (UNREACHABLE, None)
 
 
-def token_verdict(agent_email: str, refused: Optional[str] = None) -> tuple:
+def token_verdict(agent_email: str, refused: str | None = None) -> tuple:
 	"""A live access token for this account, and why if there is none.
 
 	`refused` is a token the platform has just rejected. Naming it here is what
@@ -468,8 +467,8 @@ def token_verdict(agent_email: str, refused: Optional[str] = None) -> tuple:
 
 
 def get_agent_access_token(
-	agent_email: str, *, force_renew: bool = False, refused: Optional[str] = None,
-) -> Optional[str]:
+	agent_email: str, *, force_renew: bool = False, refused: str | None = None,
+) -> str | None:
 	"""A token that is live now, or None. The only supported way to get one.
 
 	Callers that need to tell "the session is over" apart from "we could not
@@ -480,15 +479,15 @@ def get_agent_access_token(
 	return token_verdict(agent_email, refused)[1]
 
 
-def _stored_secret_for(email: str, fieldname: str) -> Optional[str]:
+def _stored_secret_for(email: str, fieldname: str) -> str | None:
 	"""One stored secret, looked up by account rather than by record name."""
 	doc = get_agent_settings_doc(email)
 	return _stored_secret(doc.name, fieldname) if doc else None
 
 
 def refresh_agent_token_on_server(
-	email: str, refused: Optional[str] = None,
-) -> Optional[str]:
+	email: str, refused: str | None = None,
+) -> str | None:
 	"""Renew this account's access token, whatever else the site is doing.
 
 	Kept as the name the rest of the app calls after a refusal; the work is done

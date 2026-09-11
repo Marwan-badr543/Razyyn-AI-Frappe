@@ -11,10 +11,10 @@ from frappe.tests.utils import FrappeTestCase
 from frappe.utils.password import get_decrypted_password
 
 from accountant_agent.accountant_agent.page.agent_chat.agent_chat import (
-	PlatformUnreachable,
 	REFUSED,
 	RENEWED,
 	UNREACHABLE,
+	PlatformUnreachable,
 	call_the_platform,
 	end_agent_session,
 	get_agent_access_token,

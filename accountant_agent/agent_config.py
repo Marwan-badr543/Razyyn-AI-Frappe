@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -52,7 +51,7 @@ _DEFAULTS: dict = {
 	"max_upload_files": 20,
 }
 
-_file_config: Optional[dict] = None
+_file_config: dict | None = None
 
 
 def _from_file() -> dict:
@@ -62,7 +61,7 @@ def _from_file() -> dict:
 		return _file_config
 
 	try:
-		with open(_CONFIG_PATH, "r", encoding="utf-8") as handle:
+		with open(_CONFIG_PATH, encoding="utf-8") as handle:
 			loaded = json.load(handle)
 		_file_config = loaded if isinstance(loaded, dict) else {}
 	except FileNotFoundError:

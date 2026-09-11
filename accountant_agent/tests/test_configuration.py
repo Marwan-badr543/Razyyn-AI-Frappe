@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -40,7 +39,7 @@ class TestConfiguration(FrappeTestCase):
 		"""
 		self.assertTrue(os.path.exists(agent_config._CONFIG_PATH))
 
-		with open(agent_config._CONFIG_PATH, "r", encoding="utf-8") as handle:
+		with open(agent_config._CONFIG_PATH, encoding="utf-8") as handle:
 			shipped = json.load(handle)
 
 		self.assertIn("agent_server_url", shipped)
@@ -105,7 +104,7 @@ class TestConfiguration(FrappeTestCase):
 				if not name.endswith(".py") or name == "agent_config.py":
 					continue
 				path = os.path.join(root, name)
-				with open(path, "r", encoding="utf-8") as handle:
+				with open(path, encoding="utf-8") as handle:
 					body = handle.read()
 				if "ACCOUNTANT_AGENT_SERVER_URL" in body or "_load_env" in body:
 					offenders.append(path)

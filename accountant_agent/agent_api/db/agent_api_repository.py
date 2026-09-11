@@ -162,7 +162,7 @@ def get_chat_session_owner(session_id: str) -> str | None:
     return frappe.db.get_value("Agent Chats", session_id, "owner")
 
 
-def get_settings_owner(settings_name: str) -> Optional[str]:
+def get_settings_owner(settings_name: str) -> str | None:
     """The ERP user an API key belongs to, or None.
 
     ``find_settings_name_by_api_key`` returns a DOCUMENT NAME, not a person.
