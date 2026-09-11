@@ -529,6 +529,69 @@
 	animation: pulse 2s infinite;
 }
 
+/* Header Broadcast Banner */
+.agent-header-banner {
+	flex: 1;
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	margin: 0 16px;
+	min-width: 0;
+}
+
+.agent-banner-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 14px;
+	border-radius: 20px;
+	font-size: 12.5px;
+	font-weight: 500;
+	background: linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(239, 68, 68, 0.08));
+	border: 1px solid rgba(245, 158, 11, 0.35);
+	color: var(--text-primary);
+	max-width: 100%;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+	transition: all 0.2s ease;
+}
+
+.agent-banner-icon {
+	color: #f59e0b;
+	font-size: 13px;
+	flex-shrink: 0;
+	animation: banner-wiggle 3s infinite ease-in-out;
+}
+
+.agent-banner-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 500px;
+}
+
+@keyframes banner-wiggle {
+	0%, 100% { transform: rotate(0deg); }
+	10%, 30% { transform: rotate(-8deg); }
+	20%, 40% { transform: rotate(8deg); }
+	50% { transform: rotate(0deg); }
+}
+
+@media (max-width: 768px) {
+	.agent-chat-header {
+		flex-wrap: wrap;
+		gap: 10px;
+	}
+	.agent-header-banner {
+		order: 3;
+		width: 100%;
+		margin: 8px 0 0 0;
+		justify-content: flex-start;
+	}
+	.agent-banner-text {
+		max-width: 100%;
+	}
+}
+
 /* Specific Agent Colors for Toggle Button Icon */
 
 .agent-disconnect-btn {

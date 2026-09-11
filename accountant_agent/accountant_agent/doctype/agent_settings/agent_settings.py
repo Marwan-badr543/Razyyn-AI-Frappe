@@ -45,7 +45,11 @@ from frappe.model.document import Document
 # whole reasoning and for how a single site overrides a value.
 from accountant_agent.agent_config import get_agent_server_url, get_ocr_languages
 
-_USAGE_REQUEST_TIMEOUT_SECONDS: int = 10
+#: The usage figures shown in Agent Settings. Twenty rather than ten: this is
+#: a live read against the agent server, and a widget that gives up in ten
+#: seconds shows a customer an error about their balance whenever the server
+#: is merely busy — which is exactly when they came to look at it.
+_USAGE_REQUEST_TIMEOUT_SECONDS: int = 20
 
 
 def hash_api_key(api_key: str) -> str:

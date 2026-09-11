@@ -181,9 +181,14 @@ frappe.pages['agent-chat'].on_page_load = function (wrapper) {
 		document.head.appendChild(script);
 	}
 
-	new AccountantAgentChat(wrapper, page);
+	frappe.pages['agent-chat'].agent_chat_instance = new AccountantAgentChat(wrapper, page);
+};
 
-
+frappe.pages['agent-chat'].on_page_show = function (wrapper) {
+	let instance = frappe.pages['agent-chat'].agent_chat_instance;
+	if (instance && instance.connected) {
+		instance.load_active_banner();
+	}
 };
 
 class AccountantAgentChat {
@@ -666,6 +671,7 @@ class AccountantAgentChat {
 								<button type="button" class="agent-plan-badge" title="${__('Loading your plan…')}"></button>
 							</div>
 						</div>
+						<div class="agent-header-banner" id="agent-header-banner" style="display: none;"></div>
 						<div class="agent-header-actions" style="display: flex; align-items: center; gap: 12px;">
 							<select class="agent-lang-selector form-control" style="width: 100px; padding: 2px 6px; height: 28px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; background-color: var(--chat-card-bg); color: var(--chat-text); border: 1px solid var(--chat-border);">
 								<option value="en" ${frappe.boot.lang === 'en' ? 'selected' : ''}>English</option>
@@ -720,6 +726,7 @@ class AccountantAgentChat {
 
 		this.setup_chat_events();
 		this.load_plan_indicator();
+		this.load_active_banner();
 
 		await this.session_manager.load_chats();
 	}
@@ -1081,4 +1088,32 @@ class AccountantAgentChat {
 		// must not return it raw.
 		return frappe.utils.escape_html(String(agent_key));
 	}
+
+	async load_active_banner() {
+		try {
+			let res = await frappe.xcall('accountant_agent.accountant_agent.page.agent_chat.agent_chat.get_active_banner_message');
+			let banner_text = res ? (res.message || res.banner) : null;
+			if (banner_text) {
+				this.render_header_banner(banner_text);
+			} else {
+				let banner_el = this.layout ? this.layout.find('#agent-header-banner') : null;
+				if (banner_el && banner_el.length) banner_el.hide().empty();
+			}
+		} catch (err) {
+			console.warn("Could not load active banner:", err);
+		}
+	}
+
+	render_header_banner(message) {
+		if (!this.layout) return;
+		let banner_el = this.layout.find('#agent-header-banner');
+		if (!banner_el.length) return;
+		banner_el.html(`
+			<div class="agent-banner-pill" title="${frappe.utils.escape_html(message)}">
+				<i class="fa fa-bullhorn agent-banner-icon"></i>
+				<span class="agent-banner-text">${frappe.utils.escape_html(message)}</span>
+			</div>
+		`).css('display', 'flex');
+	}
 }
+
