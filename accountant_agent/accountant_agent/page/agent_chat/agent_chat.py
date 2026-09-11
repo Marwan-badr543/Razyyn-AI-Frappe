@@ -165,7 +165,10 @@ def register_agent_on_server(email: str, password: str, company_name: str, api_k
 		"company_url": frappe.utils.get_url()
 	}
 	try:
-		response = requests.post(f"{get_agent_server_url()}/users/", json=payload, timeout=15)
+		response = requests.post(
+			f"{get_agent_server_url()}/users/", json=payload,
+			timeout=AGENT_REGISTER_TIMEOUT,
+		)
 		if response.status_code != 201:
 			error_msg = response.json().get("detail", "Registration failed.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
@@ -188,7 +191,10 @@ def login_agent_on_server(email: str, password: str) -> tuple:
 		"password": password
 	}
 	try:
-		response = requests.post(f"{get_agent_server_url()}/auth/login", json=login_payload, timeout=15)
+		response = requests.post(
+			f"{get_agent_server_url()}/auth/login", json=login_payload,
+			timeout=AGENT_LOGIN_TIMEOUT,
+		)
 		if response.status_code != 200:
 			error_msg = response.json().get("detail", "Login failed. Check your email and password.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
@@ -333,7 +339,7 @@ def _exchange_refresh_token(settings_name: str, email: str) -> tuple:
 		response = requests.post(
 			f"{get_agent_server_url()}/auth/refresh",
 			json={"refresh_token": refresh_token},
-			timeout=15,
+			timeout=AGENT_REFRESH_TIMEOUT,
 		)
 	except Exception as exc:
 		# A network failure is NOT an ended session. Saying nothing here leaves
@@ -1750,7 +1756,7 @@ def cancel_agent(session_id: str, agent_email: str) -> dict:
 		headers["Content-Type"] = "application/json"
 		return requests.post(
 			f"{get_agent_server_url()}/agent/cancel",
-			json=payload, headers=headers, timeout=15,
+			json=payload, headers=headers, timeout=AGENT_CANCEL_TIMEOUT,
 		)
 
 	try:
@@ -1793,7 +1799,7 @@ def get_run_state(session_id: str, agent_email: str) -> dict:
 			f"{get_agent_server_url()}/agent/chat/state",
 			params={"session_id": session_id},
 			headers=headers,
-			timeout=15,
+			timeout=AGENT_STATE_TIMEOUT,
 		)
 
 	try:
@@ -1877,7 +1883,8 @@ def delete_agent_account(agent_email: str) -> dict:
 	if user_id:
 		try:
 			response = requests.delete(
-				f"{get_agent_server_url()}/users/{user_id}", timeout=15
+				f"{get_agent_server_url()}/users/{user_id}",
+				timeout=AGENT_DELETE_ACCOUNT_TIMEOUT,
 			)
 			if response.status_code not in (200, 404):
 				frappe.throw(_("The agent account could not be deleted. Please try again."))
@@ -2072,6 +2079,53 @@ AGENT_STREAM_TIMEOUT: tuple[int, int] = (
 	AGENT_CONNECT_TIMEOUT_SECONDS,
 	AGENT_TASK_TIMEOUT_SECONDS,
 )
+
+# ─── The short calls to the agent server, one budget per task ───────────────
+#
+# WHY THESE ARE NAMED AND NOT A REPEATED `timeout=15`
+#     Six calls in this file shared one anonymous number. They are not one kind
+#     of call: hashing a password is slow BY DESIGN, deleting an account
+#     cascades across a dozen tables, and cancelling is a customer's finger on
+#     a stop button. One figure had to be wrong for most of them, and the way
+#     it was wrong is the expensive way — a registration that really was
+#     succeeding was reported to the customer as a failure, and they registered
+#     again.
+#
+#     Every budget below is a (connect, read) pair for the same reason
+#     AGENT_STREAM_TIMEOUT is: failing to REACH the server is immediate and
+#     worth reporting fast, while a server that is working needs room to finish.
+#     A single scalar forces one of those two to be wrong.
+#
+#     All of them are generous rather than tight. On this side of the wire a
+#     timeout does not save anything — the work continues on the server — it
+#     only decides whether the customer is told the truth about it.
+
+#: Creating the account. Hashes a password (deliberately slow), writes the row
+#: and mints the first tokens. Expiring here leaves an account that may well
+#: exist, and a customer who will try to create it again.
+AGENT_REGISTER_TIMEOUT: tuple[int, int] = (10, 30)
+
+#: Signing in. A password verification and a token mint — the same deliberate
+#: slowness as above, without the writes.
+AGENT_LOGIN_TIMEOUT: tuple[int, int] = (10, 30)
+
+#: Renewing an expired token, which sits on the critical path of EVERY request
+#: this app makes. Expiring here fails the customer's turn, so it is not tight;
+#: it is only shorter than the rest because there is nothing slow behind it.
+AGENT_REFRESH_TIMEOUT: tuple[int, int] = (10, 20)
+
+#: Stopping a run. The customer has pressed the button and is watching, so this
+#: is the one call where waiting is itself the failure.
+AGENT_CANCEL_TIMEOUT: tuple[int, int] = (5, 20)
+
+#: Reading where a conversation stands. A UI read; nothing is lost by giving up
+#: and asking again.
+AGENT_STATE_TIMEOUT: tuple[int, int] = (10, 20)
+
+#: Deleting an account, which cascades across every table that holds the
+#: customer's history. The slowest of these by a distance, and the one where
+#: giving up early leaves a half-deleted account nobody knows about.
+AGENT_DELETE_ACCOUNT_TIMEOUT: tuple[int, int] = (10, 60)
 
 MAX_UPLOAD_SIZE_BYTES: int = 100 * 1024 * 1024  # 100 MB: full-year ledger exports are large
 
@@ -2615,3 +2669,32 @@ def download_file(file_url: str) -> None:
 	frappe.local.response.display_content_as = "inline"
 	if content_type:
 		frappe.local.response.content_type = content_type
+
+
+@frappe.whitelist()
+def get_active_banner_message() -> dict:
+	"""Fetch the currently active broadcast banner from the agent server.
+
+	Returns a dict with `message`: string or None, `start_time`, `end_time`.
+	"""
+	_assert_signed_in()
+	try:
+		response = requests.get(
+			f"{get_agent_server_url()}/banners/active",
+			timeout=5,
+		)
+		if response.status_code == 200:
+			data = response.json()
+			return {
+				"message": data.get("message"),
+				"start_time": data.get("start_time"),
+				"end_time": data.get("end_time"),
+			}
+	except Exception as exc:
+		frappe.log_error(
+			title="Accountant Agent: Banner Fetch",
+			message=f"Could not fetch active banner: {exc}",
+		)
+	return {"message": None}
+
+
