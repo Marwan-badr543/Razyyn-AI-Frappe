@@ -365,6 +365,162 @@ def _rewrite_query(query: str) -> str:
 	return _TABLE_REFERENCE_PATTERN.sub(replace_match, query)
 
 
+#: What MariaDB says when the statement cannot be parsed, when a table is not
+#: there, and when a column is not there. All three came back to the agent as
+#: the driver's raw sentence, and none of those sentences names the cause — so
+#: the agent rewrote the same mistake until the customer cancelled the run.
+_ERRNO_SYNTAX: int = 1064
+_ERRNO_NO_SUCH_TABLE: int = 1146
+_ERRNO_NO_SUCH_COLUMN: int = 1054
+
+_ERROR_NUMBER_PATTERN: re.Pattern = re.compile(r"\((\d{4}),")
+_SYNTAX_NEAR_PATTERN: re.Pattern = re.compile(r"near ['\"]([^'\"]{1,80})", re.IGNORECASE)
+_MISSING_TABLE_PATTERN: re.Pattern = re.compile(r"Table ['\"`]([^'\"`]+)['\"`]", re.IGNORECASE)
+_MISSING_COLUMN_PATTERN: re.Pattern = re.compile(r"Unknown column ['\"`]([^'\"`]+)['\"`]", re.IGNORECASE)
+
+
+#: How much of this message the agent will actually read. Its HTTP client caps
+#: an upstream error body at `_MAX_UPSTREAM_ERROR_CHARS` (300) in
+#: `agent/tools/tools.py` — a deliberate bound on untrusted text from a host
+#: this platform was merely pointed at, and not something to raise from here.
+#:
+#: WHICH IS WHY THE CORRECTION COMES FIRST.
+#:     Every explanation below used to read "<driver sentence> — <what to do>".
+#:     The driver's sentence for a 1064 is 180 characters of boilerplate about
+#:     consulting the manual, so the clip fell exactly on the part that was
+#:     added and kept the part that was already useless. The correction leads
+#:     now and the raw text trails it: a clip costs the driver's wording, which
+#:     is in this site's own error log either way.
+_AGENT_ERROR_BUDGET_CHARS: int = 300
+
+
+def _correction_first(correction: str, detail: str) -> str:
+	"""The actionable sentence, then the database's own words behind it."""
+	return f"{correction} Database said: {detail}"
+
+
+def _error_number(exc: Exception) -> int:
+	"""The database's own error number, or 0 if this driver did not give one."""
+	for arg in getattr(exc, "args", ()):
+		if isinstance(arg, int):
+			return arg
+	match = _ERROR_NUMBER_PATTERN.search(str(exc))
+	return int(match.group(1)) if match else 0
+
+
+def _explain_syntax_error(detail: str) -> str:
+	"""Name the token MariaDB stopped at, and the likeliest reason it did.
+
+	The driver reports `check the manual ... near 'lines, SUM(debit) ...'`, which
+	names the token but never says that `lines` is a reserved word — so the agent
+	read it as a malformed expression and rewrote the expression, keeping the
+	alias, forever. The word itself is not decided here: whether a given token is
+	reserved depends on the server version, and guessing wrong in either
+	direction would be worse than saying what is true of every 1064.
+	"""
+	match = _SYNTAX_NEAR_PATTERN.search(detail)
+	words = match.group(1).split() if match else []
+	token = words[0].strip(",`'\"") if words else ""
+	if not token:
+		return detail
+	return _correction_first(
+		f"Refused at '{token}'. If that is a column or an alias you chose, it is a "
+		f"word this database reserves: rename it to something plain like "
+		f"'{token}_count' everywhere it appears, or backtick it. Otherwise the "
+		f"expression just before it is incomplete.",
+		detail,
+	)
+
+
+def _explain_missing_table(detail: str) -> str:
+	"""Say where the values of a Single actually live.
+
+	A Single DocType — Global Defaults, System Settings, Accounts Settings — has
+	no table of its own in Frappe, so `tabGlobal Defaults` has never existed on
+	any site. The raw error reads as if the customer's ERP were missing something,
+	which is the opposite of the truth.
+	"""
+	match = _MISSING_TABLE_PATTERN.search(detail)
+	if not match:
+		return detail
+
+	table = match.group(1).split(".")[-1]
+	if not table.startswith("tab"):
+		return detail
+
+	doctype = table[3:]
+	if not doctype_exists(doctype):
+		return _correction_first(
+			f"There is no '{doctype}' on this site. Check the name against "
+			f"information_schema.tables, or call get_schema for the one you meant.",
+			detail,
+		)
+
+	if bool(getattr(get_doctype_metadata(doctype), "issingle", 0)):
+		return _correction_first(
+			f"'{doctype}' is a Single: it holds one set of values and has NO table "
+			f"of its own, so `{table}` does not exist on any site. Read it with "
+			f"SELECT field, value FROM `{_SINGLES_TABLE}` WHERE doctype = "
+			f"'{doctype}'.",
+			detail,
+		)
+
+	return _correction_first(
+		f"'{doctype}' exists but `{table}` does not, so its rows are kept "
+		f"elsewhere. Call get_schema on '{doctype}' and use the table_name it "
+		f"returns.",
+		detail,
+	)
+
+
+def _explain_missing_column(detail: str) -> str:
+	"""Say the two things that make a column missing, in order of likelihood.
+
+	Either the column was never there — a name carried over from another system,
+	or invented — or it is real but on the other end of a parent/child join: a
+	row of Journal Entry Account has no posting_date, because the date belongs to
+	the Journal Entry it sits in.
+	"""
+	match = _MISSING_COLUMN_PATTERN.search(detail)
+	if not match:
+		return detail
+
+	column = match.group(1).split(".")[-1]
+	return _correction_first(
+		f"'{column}' is not a column of that table. Either it does not exist, or "
+		f"it is on the other side of a parent/child pair: a child row carries only "
+		f"its own fields plus parent, parenttype, parentfield and idx, while the "
+		f"date, party, company and status are on the parent. Call get_schema.",
+		detail,
+	)
+
+
+def _explain_execution_error(exc: Exception) -> str:
+	"""Turn a driver error into something the agent can act on in one try.
+
+	The agent is this endpoint's only caller and it is the thing that has to fix
+	the query, so the reply has to carry the fix and not just the symptom.
+
+	NOTHING IN HERE MAY RAISE. This runs inside an `except` block whose only job
+	is to turn a failed query into a clean 500, and `execute_query` has no
+	catch-all above it. An explainer that threw would replace a handled error
+	with an unhandled traceback and the agent would be told nothing at all — the
+	same shape as the log_error title that raised inside the error handler.
+	"""
+	detail = str(exc)
+	try:
+		number = _error_number(exc)
+		if number == _ERRNO_SYNTAX:
+			return _explain_syntax_error(detail)
+		if number == _ERRNO_NO_SUCH_TABLE:
+			return _explain_missing_table(detail)
+		if number == _ERRNO_NO_SUCH_COLUMN:
+			return _explain_missing_column(detail)
+	except Exception:
+		return detail
+	return detail
+
+
 def validate_and_execute_query(sql_query: str, settings_user: str) -> dict:
 	"""Validate a SQL query for read-only safety, then execute it under limits.
 
@@ -402,7 +558,7 @@ def validate_and_execute_query(sql_query: str, settings_user: str) -> dict:
 			timeout_seconds=_query_timeout_seconds(),
 		)
 	except Exception as exc:
-		raise QueryExecutionError(str(exc)) from exc
+		raise QueryExecutionError(_explain_execution_error(exc)) from exc
 
 	columns = list(result[0].keys()) if result else []
 	return {
@@ -426,6 +582,14 @@ def validate_and_execute_query(sql_query: str, settings_user: str) -> dict:
 # ─── DocType Schema Service ─────────────────────────────────────────────────
 
 # Layout field types that carry no data and should be excluded from schema summaries
+#
+# `Table` is here because a table field is not a column on this DocType's own
+# table — its rows live somewhere else entirely. Listing it among the columns
+# would be a lie. It is reported separately, under `child_tables`, because NOT
+# reporting it at all was worse: a caller asking about a Journal Entry was
+# never told that Journal Entry Account existed, so it had to guess both the
+# table name and what a row of it holds, and it guessed that the header's
+# posting_date was on the row.
 _IGNORED_FIELD_TYPES: set[str] = {
 	"Section Break",
 	"Column Break",
@@ -433,8 +597,77 @@ _IGNORED_FIELD_TYPES: set[str] = {
 	"HTML",
 	"Fold",
 	"Table",
+	"Table MultiSelect",
 	"Heading",
 }
+
+# Field types whose rows live in their own table.
+_CHILD_TABLE_FIELD_TYPES: tuple[str, ...] = ("Table", "Table MultiSelect")
+
+#: The columns Frappe puts on every child row, whatever the DocType. They are
+#: how a row is joined back to the document it belongs to, and none of them is
+#: in `meta.fields`, so a caller that only sees the field list does not know a
+#: row can be joined at all.
+_CHILD_ROW_COLUMNS: tuple[str, ...] = (
+	"parent (Data) - the `name` of the document this row belongs to",
+	"parenttype (Data) - the DocType of that document",
+	"parentfield (Data) - which table field of it this row sits in",
+	"idx (Int) - the row's position in that table, starting at 1",
+)
+
+#: Where a Single DocType actually keeps its values. Frappe gives a Single no
+#: table of its own: `tabGlobal Defaults` does not exist and never did, and a
+#: caller told its table was `tab<DocType>` got "Table ... doesn't exist" for a
+#: perfectly ordinary question.
+_SINGLES_TABLE: str = "tabSingles"
+
+
+def _child_table_entry(df) -> dict:
+	"""One row of the `child_tables` list, for a table field."""
+	child = df.options or ""
+	return {
+		"fieldname": df.fieldname,
+		"label": df.label or df.fieldname,
+		"doctype": child,
+		"table_name": f"tab{child}" if child else "",
+	}
+
+
+def _how_to_read(doctype: str, is_single: bool, is_child: bool, child_tables: list[dict]) -> str:
+	"""One sentence telling the caller where this DocType's rows actually are.
+
+	Written because the two commonest failed queries against this endpoint were
+	both the caller believing something the reply had implied. A Single was said
+	to live in `tab<DocType>`, which does not exist. A parent never mentioned its
+	rows, so their columns were guessed onto the parent and the parent's columns
+	were guessed onto them.
+	"""
+	if is_single:
+		return (
+			f"'{doctype}' is a Single: it has ONE set of values and NO table of its "
+			f"own. `tab{doctype}` does not exist. Read it from `{_SINGLES_TABLE}`, "
+			f"which stores one row per setting: "
+			f"SELECT field, value FROM `{_SINGLES_TABLE}` WHERE doctype = '{doctype}'. "
+			f"The `fields` below are the values the `field` column can take."
+		)
+
+	if is_child:
+		return (
+			f"'{doctype}' is a child table: every row belongs to a parent document "
+			f"and carries only the columns listed below. The posting date, the party, "
+			f"the company and the status are on the PARENT, not here — join "
+			f"`tab{doctype}`.parent to the parent table's `name` to reach them."
+		)
+
+	if child_tables:
+		named = ", ".join(f"`{row['table_name']}`" for row in child_tables if row["table_name"])
+		return (
+			f"The rows of '{doctype}' are NOT columns of `tab{doctype}`; they live in "
+			f"their own tables ({named}), joined by parent = `tab{doctype}`.name. Call "
+			f"get_schema on one of those to see what a row holds."
+		)
+
+	return ""
 
 
 def build_doctype_schema_summary(doctype: str) -> dict:
@@ -445,7 +678,8 @@ def build_doctype_schema_summary(doctype: str) -> dict:
 		doctype: The DocType name to summarize.
 
 	Returns:
-		dict with keys: success, doctype, table_name, fields.
+		dict with keys: success, doctype, table_name, is_single, is_child_table,
+		is_submittable, child_tables, how_to_read, fields.
 
 	Raises:
 		MissingParameterError: If doctype is empty.
@@ -459,12 +693,28 @@ def build_doctype_schema_summary(doctype: str) -> dict:
 
 	meta = get_doctype_metadata(doctype)
 
+	is_single = bool(getattr(meta, "issingle", 0))
+	is_child = bool(getattr(meta, "istable", 0))
+
 	fields_summary: list[str] = [
 		"name (Data/Primary Key)",
 		"docstatus (Int: 0=Draft, 1=Submitted, 2=Cancelled)",
 	]
 
+	# A child row's link back to its document. Frappe puts these on every child
+	# table and on none of them does it appear in `meta.fields`, so a caller
+	# working from the field list alone cannot see that the row can be joined at
+	# all — and writes the parent's date into the child's SELECT instead.
+	if is_child:
+		fields_summary.extend(_CHILD_ROW_COLUMNS)
+
+	child_tables: list[dict] = []
+
 	for df in meta.fields:
+		if df.fieldtype in _CHILD_TABLE_FIELD_TYPES:
+			child_tables.append(_child_table_entry(df))
+			continue
+
 		if df.fieldtype in _IGNORED_FIELD_TYPES:
 			continue
 
@@ -487,7 +737,13 @@ def build_doctype_schema_summary(doctype: str) -> dict:
 	return {
 		"success": True,
 		"doctype": doctype,
-		"table_name": f"tab{doctype}",
+		# The table a SELECT should name. For a Single that is not `tab<DocType>`
+		# — Frappe never creates one — and saying otherwise sent the caller to a
+		# table that does not exist, which came back as a raw "Table ... doesn't
+		# exist" that read like the customer's ERP was broken.
+		"table_name": _SINGLES_TABLE if is_single else f"tab{doctype}",
+		"is_single": is_single,
+		"is_child_table": is_child,
 		# Whether `docstatus` means anything on this table. A submittable
 		# DocType stores drafts (0), submitted (1) and cancelled (2) records
 		# side by side, so an analysis of it that does not constrain docstatus
@@ -496,6 +752,11 @@ def build_doctype_schema_summary(doctype: str) -> dict:
 		# every row sits at 0, so the same constraint would return nothing.
 		# The caller cannot tell the two apart from the field list alone.
 		"is_submittable": bool(getattr(meta, "is_submittable", 0)),
+		# The tables this document's rows live in. Empty for a document that has
+		# none. Never omitted, so a caller can tell "no child tables" from "this
+		# reply predates the field".
+		"child_tables": child_tables,
+		"how_to_read": _how_to_read(doctype, is_single, is_child, child_tables),
 		"fields": fields_summary,
 	}
 
