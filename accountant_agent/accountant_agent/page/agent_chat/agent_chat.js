@@ -41,41 +41,6 @@ const RAZYYN_BRAND_MARK = `
 	</span>
 `;
 
-/**
- * The letter the mark stands in for. The mark takes that letter's place in the
- * name, so it reads as the first letter of the word rather than as an icon
- * sitting next to it.
- */
-const RAZYYN_MARK_LETTER = 'R';
-
-/**
- * Build the brand lockup in the page head: the mark, then the rest of the name.
- *
- * The title drops its leading "R" because the mark supplies it — together they
- * spell the name as one word. A translated name that does not begin with that
- * letter keeps all of its letters; the mark never chops a letter it is not
- * standing in for. The browser tab and the title tooltip keep the full name.
- *
- * The mark goes in as a *sibling* of `.title-text`, never a child: Frappe's
- * `page.set_title()` replaces that element's contents, which would silently
- * wipe a mark placed inside it. Re-running this is safe — the leading letter is
- * already gone and any previous mark is removed first — so a re-rendered header
- * never ends up with two marks or a shortened name.
- */
-function render_brand_lockup(wrapper) {
-	let title = $(wrapper).find('.title-area .title-text');
-	let title_row = title.parent();
-	let name = title.text();
-
-	if (name.startsWith(RAZYYN_MARK_LETTER)) {
-		title.text(name.slice(RAZYYN_MARK_LETTER.length));
-	}
-
-	title_row.addClass('agent-brand-lockup');
-	title_row.find('.agent-brand-mark').remove();
-	title_row.prepend(RAZYYN_BRAND_MARK);
-}
-
 frappe.pages['agent-chat'].on_page_load = function (wrapper) {
 	try {
 		delete localStorage['_page:agent-chat'];
@@ -87,7 +52,14 @@ frappe.pages['agent-chat'].on_page_load = function (wrapper) {
 		single_column: true
 	});
 
-	render_brand_lockup(wrapper);
+	// This page draws its own full header — the dark sidebar's "+ New Chat",
+	// and the "Connected: email / language / dark-mode / Settings" row inside
+	// .agent-chat-view — so Frappe's native title bar above it would only be a
+	// second, redundant header strip with nothing of its own to show. Hidden
+	// once, here: this callback runs a single time per visit to the route
+	// (Frappe reuses the same page DOM on later visits), and the class survives
+	// every re-render this file does inside `.page-content` below it.
+	$(wrapper).find('.page-head').addClass('hide');
 
 	// Dynamically load Mermaid from CDN to support all Frappe versions (including v14)
 	if (!window.mermaid) {
@@ -457,6 +429,14 @@ class AccountantAgentChat {
 					this.message_handler.set_button_state('send');
 				}
 				await this.session_manager.load_chats(false);
+
+				// A finished turn is the one moment usage reliably changed.
+				// Not awaited: the badge catching up a beat later is fine, and
+				// this must never hold up the chat rebuild above it. Only on
+				// "done" (not the error/cancel events below) — a turn that
+				// never reached the platform, or that the customer stopped,
+				// is not expected to have moved the usage number.
+				this.load_plan_indicator();
 			}
 		});
 
@@ -473,9 +453,9 @@ class AccountantAgentChat {
 					let stream = this.active_streams[data.session_id];
 					if (data.session_id === active_session_id) {
 						this.ui_manager.finalize_stream_bubble(
-							this.msg_box, 
-							stream.bubble_id, 
-							`⚠️ **Error:** ${data.error || __("An error occurred during execution.")}`, 
+							this.msg_box,
+							stream.bubble_id,
+							`⚠️ **Error:** ${data.error || __("An error occurred during execution.")}`,
 							new Date().toISOString(),
 							__("Failed")
 						);
@@ -502,9 +482,9 @@ class AccountantAgentChat {
 					let stream = this.active_streams[data.session_id];
 					if (data.session_id === active_session_id) {
 						this.ui_manager.finalize_stream_bubble(
-							this.msg_box, 
-							stream.bubble_id, 
-							`⚠️ **Cancelled**`, 
+							this.msg_box,
+							stream.bubble_id,
+							`⚠️ **Cancelled**`,
 							new Date().toISOString(),
 							__("Cancelled")
 						);
@@ -575,24 +555,24 @@ class AccountantAgentChat {
 						<a class="nav-link ${this.active_tab === 'signup' ? 'active' : ''}" data-tab="signup">${__('Sign Up')}</a>
 					</li>
 				</ul>
-				
+
 				<div class="auth-form-container">
 					<form id="agent-auth-form">
 						<div class="form-group signup-field" style="display: ${this.active_tab === 'signup' ? 'block' : 'none'};">
 							<label for="auth-company">${__('Company Name')}</label>
 							<input type="text" id="auth-company" placeholder="e.g. My Company Corp">
 						</div>
-						
+
 						<div class="form-group">
 							<label for="auth-email">${__('Email Address')}</label>
 							<input type="email" id="auth-email" placeholder="email@example.com" required>
 						</div>
-						
+
 						<div class="form-group">
 							<label for="auth-password">${__('Password')}</label>
 							<input type="password" id="auth-password" placeholder="••••••••" required>
 						</div>
-						
+
 						<button type="submit" class="agent-auth-btn">
 							${this.active_tab === 'login' ? __('Connect') : __('Create Account')}
 						</button>
@@ -668,15 +648,22 @@ class AccountantAgentChat {
 					</button>
 					<div class="agent-chat-list"></div>
 				</div>
-				
+
 				<!-- Main Chat View Area -->
 				<div class="agent-chat-view">
 					<!-- Header -->
 					<div class="agent-chat-header">
-						<div class="agent-status-container">
-							<div class="agent-status-badge">
-								<div class="agent-status-dot"></div>
-								${__('Connected:')} <a href="javascript:void(0)" class="agent-email-link" title="${__('Click to view Agent Settings')}"><strong>${this.connected_email}</strong> <i class="fa fa-cog" style="font-size: 11px; margin-left: 3px;"></i></a>
+						<div class="agent-topbar-left">
+							<div class="agent-topbar-brand">
+								${RAZYYN_BRAND_MARK}
+								<span class="agent-topbar-brand-text">${__('Razyyn AI')}</span>
+							</div>
+							<div class="agent-status-container">
+								<div class="agent-status-badge">
+									<div class="agent-status-dot"></div>
+									${__('Connected:')} <a href="javascript:void(0)" class="agent-email-link" title="${__('Click to view Agent Settings')}"><strong>${this.connected_email}</strong> <i class="fa fa-cog" style="font-size: 11px; margin-left: 3px;"></i></a>
+								</div>
+								<button type="button" class="agent-plan-badge" title="${__('Loading your plan…')}"></button>
 							</div>
 						</div>
 						<div class="agent-header-actions" style="display: flex; align-items: center; gap: 12px;">
@@ -692,10 +679,10 @@ class AccountantAgentChat {
 							</button>
 						</div>
 					</div>
-					
+
 					<!-- Messages Container -->
 					<div class="agent-messages-container" id="agent-msg-box"></div>
-					
+
 					<!-- Input Area -->
 					<div class="agent-input-container">
 						<div class="agent-clarification-popup" style="display: none;"></div>
@@ -732,27 +719,15 @@ class AccountantAgentChat {
 		);
 
 		this.setup_chat_events();
+		this.load_plan_indicator();
 
 		await this.session_manager.load_chats();
 	}
 
 	setup_chat_events() {
-		this.layout.find('.agent-email-link').on('click', async (e) => {
+		this.layout.find('.agent-email-link, .agent-plan-badge').on('click', (e) => {
 			e.preventDefault();
-			if (!this.connected_email) return;
-			try {
-				let doc_name = await frappe.xcall(
-					'accountant_agent.accountant_agent.doctype.agent_settings.agent_settings.get_agent_settings_name',
-					{ email: this.connected_email }
-				);
-				if (doc_name) {
-					frappe.set_route('Form', 'Agent Settings', doc_name);
-				} else {
-					frappe.show_alert({ message: __('Agent Settings record not found.'), indicator: 'orange' });
-				}
-			} catch (err) {
-				console.error("Error opening Agent Settings:", err);
-			}
+			this.open_agent_settings();
 		});
 
 		this.sidebar.find('.new-chat-btn').on('click', () => {
@@ -793,51 +768,16 @@ class AccountantAgentChat {
 
 			d.$wrapper.find('.logout-action-btn').on('click', async () => {
 				d.hide();
-				frappe.dom.freeze(__('Logging out...'));
-				try {
-					let agent_email = localStorage.getItem('connected_agent_email');
-					await frappe.xcall(
-						'accountant_agent.accountant_agent.page.agent_chat.agent_chat.disconnect_agent',
-						{ agent_email: agent_email }
-					);
-					self.connected = false;
-					self.connected_email = null;
-					localStorage.removeItem('connected_agent_email');
-					self.session_manager.session_id = null;
-					await self.init();
-					frappe.show_alert({ message: __('Logged out successfully!'), indicator: 'green' });
-				} catch (e) {
-					console.error("Logout error:", e);
-				} finally {
-					frappe.dom.unfreeze();
-				}
+				await self.logout_agent();
 			});
 
 			d.$wrapper.find('.delete-action-btn').on('click', () => {
-				frappe.confirm(
-					__('Are you sure you want to permanently delete your agent account?'),
-					async () => {
-						d.hide();
-						frappe.dom.freeze(__('Deleting account...'));
-						try {
-							let agent_email = localStorage.getItem('connected_agent_email');
-							await frappe.xcall(
-								'accountant_agent.accountant_agent.page.agent_chat.agent_chat.delete_agent_account',
-								{ agent_email: agent_email }
-							);
-							self.connected = false;
-							self.connected_email = null;
-							localStorage.removeItem('connected_agent_email');
-							self.session_manager.session_id = null;
-							await self.init();
-							frappe.show_alert({ message: __('Account deleted successfully!'), indicator: 'green' });
-						} catch (e) {
-							console.error("Delete account error:", e);
-						} finally {
-							frappe.dom.unfreeze();
-						}
-					}
-				);
+				// `d.hide()` runs only once the customer actually confirms,
+				// exactly as before this was pulled out into a shared method —
+				// pressing "Delete Account" and then cancelling the confirm
+				// leaves this Settings dialog open rather than dismissing it
+				// pre-emptively.
+				self.confirm_delete_account(() => d.hide());
 			});
 
 			d.show();
@@ -921,6 +861,125 @@ class AccountantAgentChat {
 
 	show_clarification_popup(questions) {
 		this.message_handler.show_clarification_popup(questions);
+	}
+
+	// Shared by the "Connected: <email>" link in the custom topbar and by the
+	// plan badge below — both open the same Agent Settings record.
+	async open_agent_settings() {
+		if (!this.connected_email) return;
+		try {
+			let doc_name = await frappe.xcall(
+				'accountant_agent.accountant_agent.doctype.agent_settings.agent_settings.get_agent_settings_name',
+				{ email: this.connected_email }
+			);
+			if (doc_name) {
+				frappe.set_route('Form', 'Agent Settings', doc_name);
+			} else {
+				frappe.show_alert({ message: __('Agent Settings record not found.'), indicator: 'orange' });
+			}
+		} catch (err) {
+			console.error("Error opening Agent Settings:", err);
+		}
+	}
+
+	// The read-only plan/usage badge, using the same
+	// agent_settings.get_user_usage endpoint the Agent Settings form's own
+	// "API Resource Usage" panel already calls — one number (percentage of
+	// the monthly plan spent) and the plan name, nothing invented here.
+	async load_plan_indicator() {
+		if (!this.connected_email) return;
+		try {
+			let data = await frappe.xcall(
+				'accountant_agent.accountant_agent.doctype.agent_settings.agent_settings.get_user_usage',
+				{ email: this.connected_email }
+			);
+			this.render_plan_indicator(data);
+		} catch (e) {
+			console.error("Could not load plan usage:", e);
+		}
+	}
+
+	render_plan_indicator(data) {
+		if (!this.layout) return;
+		let badge = this.layout.find('.agent-plan-badge');
+		if (!badge.length) return;
+
+		let plan_raw = (data && data.plan) || 'free';
+		let usage = Math.round((data && data.total_usage_percentage) || 0);
+
+		// Capitalised for display without a separate translation entry per
+		// case, and safely for a right-to-left or non-Latin translation too:
+		// toUpperCase() on a character with no case is a no-op, not a mangle.
+		let plan_translated = __(plan_raw);
+		let plan_label = plan_translated.charAt(0).toUpperCase() + plan_translated.slice(1);
+
+		// Usage takes priority over plan tier: a customer about to be refused
+		// requests needs the warning colour whatever plan they are on.
+		badge.removeClass('plan-tier-plus plan-tier-pro plan-tier-ultra plan-usage-warn plan-usage-danger');
+		if (usage >= 90) {
+			badge.addClass('plan-usage-danger');
+		} else if (usage >= 70) {
+			badge.addClass('plan-usage-warn');
+		} else if (plan_raw === 'plus' || plan_raw === 'pro' || plan_raw === 'ultra') {
+			badge.addClass(`plan-tier-${plan_raw}`);
+		}
+
+		// .text(), not .html(): `plan` reaches here from the agent server's own
+		// JSON response (get_user_usage), never a trusted constant.
+		badge.text(`${plan_label} · ${usage}%`);
+		badge.attr('title', __('{0} plan — {1}% of your monthly allowance used. Click to open Agent Settings.', [plan_label, usage]));
+	}
+
+	async logout_agent() {
+		frappe.dom.freeze(__('Logging out...'));
+		try {
+			let agent_email = localStorage.getItem('connected_agent_email');
+			await frappe.xcall(
+				'accountant_agent.accountant_agent.page.agent_chat.agent_chat.disconnect_agent',
+				{ agent_email: agent_email }
+			);
+			this.connected = false;
+			this.connected_email = null;
+			localStorage.removeItem('connected_agent_email');
+			this.session_manager.session_id = null;
+			await this.init();
+			frappe.show_alert({ message: __('Logged out successfully!'), indicator: 'green' });
+		} catch (e) {
+			console.error("Logout error:", e);
+		} finally {
+			frappe.dom.unfreeze();
+		}
+	}
+
+	// `before_delete` runs only once the customer has actually confirmed —
+	// never on the initial click — so a caller that opened this from its own
+	// dialog (the Settings gear) can dismiss that dialog at the same moment
+	// the deletion itself starts, and not a moment before.
+	confirm_delete_account(before_delete) {
+		frappe.confirm(
+			__('Are you sure you want to permanently delete your agent account?'),
+			async () => {
+				if (typeof before_delete === 'function') before_delete();
+				frappe.dom.freeze(__('Deleting account...'));
+				try {
+					let agent_email = localStorage.getItem('connected_agent_email');
+					await frappe.xcall(
+						'accountant_agent.accountant_agent.page.agent_chat.agent_chat.delete_agent_account',
+						{ agent_email: agent_email }
+					);
+					this.connected = false;
+					this.connected_email = null;
+					localStorage.removeItem('connected_agent_email');
+					this.session_manager.session_id = null;
+					await this.init();
+					frappe.show_alert({ message: __('Account deleted successfully!'), indicator: 'green' });
+				} catch (e) {
+					console.error("Delete account error:", e);
+				} finally {
+					frappe.dom.unfreeze();
+				}
+			}
+		);
 	}
 
 	start_stream_timer(session_id) {

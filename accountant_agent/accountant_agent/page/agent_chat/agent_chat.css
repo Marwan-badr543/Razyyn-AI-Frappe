@@ -45,7 +45,7 @@
 	--color-success-light: rgba(16, 185, 129, 0.08);
 	--color-success-glow: rgba(16, 185, 129, 0.04);
 	--color-success-shadow: rgba(16, 185, 129, 0.25);
-	
+
 	--color-warning: #f59e0b;  /* Amber-500 */
 	--color-warning-light: rgba(245, 158, 11, 0.08);
 	--color-warning-glow: rgba(245, 158, 11, 0.04);
@@ -81,7 +81,7 @@
 	--shadow-dropdown: 0 10px 25px rgba(0, 0, 0, 0.08);
 	--shadow-popup-box: 0 4px 24px rgba(0, 0, 0, 0.12);
 	--shadow-plan-card: 0 4px 15px rgba(0, 0, 0, 0.05);
-	
+
 	--shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
 	--shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
 	--shadow-inset-ambient: inset 0 1px 2px rgba(0, 0, 0, 0.02);
@@ -108,11 +108,9 @@
 	/* UI Constants */
 	--transition-hover: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 
-	/* Chat window frame. The page header reads --chat-gutter to line the brand
-	   mark up with the left edge of the chat card. */
+	/* Chat window frame. */
 	--chat-frame-margin: 15px;
 	--chat-frame-padding: 10px;
-	--chat-gutter: calc(var(--chat-frame-margin) + var(--chat-frame-padding));
 }
 
 [data-theme="dark"] {
@@ -157,7 +155,7 @@
 	--shadow-dropdown: 0 10px 25px rgba(0, 0, 0, 0.5);
 	--shadow-popup-box: 0 4px 24px rgba(0, 0, 0, 0.4);
 	--shadow-plan-card: 0 4px 15px rgba(0, 0, 0, 0.3);
-	
+
 	--shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
 	--shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
 	--shadow-inset-ambient: inset 0 1px 2px rgba(0, 0, 0, 0.2);
@@ -172,7 +170,17 @@
 .agent-chat-container {
 	display: flex;
 	flex-direction: column;
-	height: calc(100vh - 165px);
+	/* 165px was tuned for the desk navbar (48px) PLUS Frappe's native
+	 * page-head title bar that used to sit above this container. That title
+	 * bar is hidden entirely for this route now (see the `.page-head` rule
+	 * below and the on_page_load hide in agent_chat.js) — this page draws its
+	 * own full header instead — so the reserved height drops to just the
+	 * navbar and this element's own top/bottom frame margin: 48px navbar +
+	 * 15px top margin + 15px bottom margin = 78px. Leaving the old 165px would
+	 * have moved the chat card up without letting it grow, dumping the
+	 * reclaimed space as a dead band underneath it instead of into the chat.
+	 */
+	height: calc(100vh - 78px);
 	max-width: 100%;
 	margin: var(--chat-frame-margin);
 	padding: var(--chat-frame-padding);
@@ -1845,29 +1853,26 @@
 	margin-right: 0;
 }
 
-/* ── The brand lockup in the page title ─────────────────────────────────────
+/* ── The Razyyn brand mark ────────────────────────────────────────────────
  *
- * The low-poly "R" is the first letter of the name, not an icon beside it: the
- * title drops its leading "R" and the mark sits tight against what is left, so
- * the two read as one word — "R" + "azyyn AI".
- *
- * The lockup starts at exactly the same left gutter as the chat window below
- * it. Both offsets read `--chat-gutter`, derived from the chat frame's own
- * margin and padding, so the header and the chat card cannot drift apart. The
- * page head and the page body are sibling `.container` elements whose
- * horizontal padding and margin this page already zeroes, so they share a left
- * origin; the gutter is measured from there on both.
+ * Lives in this page's own header (.agent-chat-header) now, not in Frappe's
+ * native title bar above it — that bar is hidden entirely for this route (see
+ * the `.page-head` rule and the on_page_load hide in agent_chat.js) since this
+ * page draws its own full header and a second, empty title strip above it was
+ * dead space with nothing of its own to show.
  */
-#page-agent-chat .page-head .title-area,
-[data-page-route="agent-chat"] .page-head .title-area {
-	padding-left: var(--chat-gutter);
+#page-agent-chat .page-head,
+[data-page-route="agent-chat"] .page-head {
+	/* Belt-and-suspenders alongside the JS hide in on_page_load: this route
+	   never has a use for Frappe's native title bar, so it stays hidden even
+	   if some future change to that JS is ever skipped or reverted. */
+	display: none !important;
 }
 
 .agent-brand-mark {
 	display: inline-flex;
 	align-self: center;
 	flex-shrink: 0;
-	margin-right: 2px;
 	line-height: 0;
 }
 
@@ -1877,26 +1882,106 @@
 	width: auto;
 }
 
-/* The lockup's trailing edge has to be the last letter of the name. Frappe
-   leaves a gap and an empty pill after every page title in case the page sets a
-   status; this one never does, and in a right-to-left desk that reserved space
-   would sit between the name and the gutter. The pill reappears by itself if a
-   status is ever set. */
-.page-title .title-area .agent-brand-lockup .title-text {
-	margin-right: 0;
+/* The left-hand group of the in-chat header: brand mark, then the
+ * "Connected: …" / plan badges. Grouped in its own flex row so the header's
+ * own `justify-content: space-between` still reads as exactly two columns —
+ * this group on the left, language/theme/Settings on the right — instead of
+ * three items competing for that space-between. */
+.agent-topbar-left {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	min-width: 0;
 }
 
-.agent-brand-lockup .indicator-pill:empty {
+.agent-topbar-left .agent-brand-mark-svg {
+	height: 22px;
+}
+
+.agent-topbar-brand {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-shrink: 0;
+}
+
+.agent-topbar-brand-text {
+	font-size: 15px;
+	font-weight: 700;
+	color: var(--chat-text);
+	white-space: nowrap;
+}
+
+/* The name is a Latin wordmark, and its letters — and its mark, which always
+ * leads it — must not be reordered by an Arabic desk's right-to-left flow.
+ * Forcing this one group back to ltr keeps "mark, then Razyyn AI" in that
+ * order; it does not affect which side of the header the group as a whole
+ * sits on, since that is decided by `.agent-chat-header`'s own row mirroring. */
+[dir="rtl"] .agent-topbar-brand {
+	direction: ltr;
+}
+
+/* RTL needs nothing extra here: a plain flex row already mirrors under
+ * `dir="rtl"` (the CSS flexbox spec flips the main axis with the page
+ * direction), the same way `.agent-status-container`'s siblings do. */
+
+/* The read-only plan/usage badge, next to the "Connected: …" pill it shares
+ * `.agent-status-container` with. Neutral by default (free plan, healthy
+ * usage); a paid tier or an approaching quota swaps in a themed pill via the
+ * modifier classes below, set in agent_chat.js render_plan_indicator(). Empty
+ * (still loading, or never connected) collapses to nothing rather than
+ * showing an empty pill. */
+.agent-plan-badge {
+	display: inline-flex;
+	align-items: center;
+	padding: 5px 12px;
+	border-radius: 20px;
+	font-size: 12px;
+	font-weight: 700;
+	font-family: var(--chat-font);
+	border: none;
+	cursor: pointer;
+	white-space: nowrap;
+	background-color: var(--overlay-hover);
+	color: var(--chat-text-muted);
+	transition: var(--transition-hover);
+}
+
+.agent-plan-badge:empty {
 	display: none;
 }
 
-/* In an Arabic desk the lockup moves to the right-hand gutter, but the name is
-   a Latin word and its letters must not be reordered: the mark stays at the
-   front of "azyyn AI" instead of being pushed to the far side of it. */
-[dir="rtl"] #page-agent-chat .page-head .title-area,
-[dir="rtl"] [data-page-route="agent-chat"] .page-head .title-area {
-	padding-left: 0;
-	padding-right: var(--chat-gutter);
+.agent-plan-badge:hover {
+	filter: brightness(0.96);
+}
+
+[data-theme="dark"] .agent-plan-badge:hover {
+	filter: brightness(1.15);
+}
+
+.agent-plan-badge.plan-tier-plus {
+	background-color: var(--color-success-light);
+	color: var(--color-success);
+}
+
+.agent-plan-badge.plan-tier-pro {
+	background-color: var(--color-info-light);
+	color: var(--color-info);
+}
+
+.agent-plan-badge.plan-tier-ultra {
+	background-color: var(--color-accent-light);
+	color: var(--chat-primary-hover);
+}
+
+.agent-plan-badge.plan-usage-warn {
+	background-color: var(--color-warning-light);
+	color: var(--color-warning);
+}
+
+.agent-plan-badge.plan-usage-danger {
+	background-color: var(--color-danger-light);
+	color: var(--color-danger);
 }
 
 [dir="rtl"] .agent-brand-lockup {
