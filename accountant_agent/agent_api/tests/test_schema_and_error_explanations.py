@@ -156,3 +156,114 @@ class TestSchemaSummarySaysWhereRowsLive(FrappeTestCase):
 		summary = build_doctype_schema_summary("Company")
 		self.assertIn("child_tables", summary)
 		self.assertIsInstance(summary["child_tables"], list)
+
+
+class TestAMissingColumnSaysWhereTheColumnActuallyIs(FrappeTestCase):
+	"""The 1054 the agent could not act on.
+
+	MariaDB says `Unknown column 'account' in 'SELECT'`. It names the column and
+	it never names the table — so on a query that joins three tables the agent is
+	told something is wrong and given no way to work out which of the three it
+	is. A production run rewrote the same guess until the customer cancelled it.
+
+	The failing query is in hand when the explanation is written, so it is read.
+	Every column name below came out of that run's logs.
+	"""
+
+	def test_a_child_column_selected_from_the_parent_names_the_child_table(self):
+		detail = _explain_execution_error(
+			DriverError(1054, "Unknown column 'account' in 'SELECT'"),
+			"SELECT posting_date, account FROM `tabJournal Entry` WHERE docstatus = 1",
+		)
+		self.assertIn("tabJournal Entry Account", detail)
+		self.assertIn("parent", detail)
+
+	def test_a_parent_column_selected_from_the_child_names_the_join(self):
+		"""The inversion the other way round, and the one the raw error is most
+		misleading about: the column is perfectly real, it is one join away."""
+		detail = _explain_execution_error(
+			DriverError(1054, "Unknown column 'posting_date' in 'SELECT'"),
+			"SELECT posting_date, debit FROM `tabJournal Entry Account`",
+		)
+		self.assertIn("tabJournal Entry", detail)
+		self.assertIn("parent", detail)
+
+	def test_a_column_on_a_joined_table_is_told_to_qualify_itself(self):
+		detail = _explain_execution_error(
+			DriverError(1054, "Unknown column 'account_type' in 'SELECT'"),
+			"SELECT account_type FROM `tabGL Entry` gl "
+			"JOIN `tabAccount` a ON a.name = gl.account",
+		)
+		self.assertIn("tabAccount", detail)
+
+	def test_a_near_miss_is_offered_the_name_that_does_exist(self):
+		"""`fiscal_year_start_date` is a name from another system. The column it
+		was reaching for is one word away and is on the table it already named."""
+		detail = _explain_execution_error(
+			DriverError(1054, "Unknown column 'fiscal_year_start_date' in 'SELECT'"),
+			"SELECT fiscal_year_start_date FROM `tabFiscal Year`",
+		)
+		self.assertIn("year_start_date", detail)
+
+	def test_a_column_that_is_nowhere_says_so_without_inventing_a_home_for_it(self):
+		detail = _explain_execution_error(
+			DriverError(1054, "Unknown column 'modification_count' in 'SELECT'"),
+			"SELECT modification_count FROM `tabGL Entry`",
+		)
+		self.assertIn("modification_count", detail)
+		self.assertIn("tabGL Entry", detail)
+
+	def test_without_the_query_it_keeps_the_wording_it_always_had(self):
+		"""Every other caller of this explainer still gets an answer."""
+		detail = _explain_execution_error(
+			DriverError(1054, "Unknown column 'is_closed' in 'SELECT'")
+		)
+		self.assertIn("is_closed", detail)
+		self.assertIn("parent", detail)
+
+	def test_a_table_this_site_does_not_have_is_never_guessed_about(self):
+		detail = _explain_execution_error(
+			DriverError(1054, "Unknown column 'foo' in 'SELECT'"),
+			"SELECT foo FROM `tabNot A Real DocType`",
+		)
+		self.assertIn("foo", detail)
+		self.assertNotIn("Not A Real DocType", detail.split("Database said:")[0])
+
+	def test_the_correction_still_fits_what_the_agent_will_read(self):
+		"""The agent's HTTP client clips an upstream error body at
+		`_AGENT_ERROR_BUDGET_CHARS`, so a correction longer than that arrives
+		with its useful half cut off."""
+		for column, sql in (
+			("account", "SELECT account FROM `tabJournal Entry`"),
+			("posting_date", "SELECT posting_date FROM `tabJournal Entry Account`"),
+			("fiscal_year_start_date", "SELECT fiscal_year_start_date FROM `tabFiscal Year`"),
+			("account_type", "SELECT account_type FROM `tabGL Entry` gl "
+			                 "JOIN `tabAccount` a ON a.name = gl.account"),
+			("modification_count", "SELECT modification_count FROM `tabGL Entry`"),
+		):
+			with self.subTest(column=column):
+				detail = _explain_execution_error(
+					DriverError(1054, f"Unknown column '{column}' in 'SELECT'"), sql)
+				correction = detail.split(" Database said:")[0]
+				self.assertLessEqual(len(correction), _AGENT_ERROR_BUDGET_CHARS)
+
+	def test_nothing_a_hostile_query_can_do_makes_this_raise(self):
+		"""This runs inside an `except` block that `validate_and_execute_query`
+		has no catch-all above. An explainer that threw would replace a handled
+		error with an unhandled traceback and the agent would be told nothing."""
+		for sql in ("", "SELECT", "FROM FROM FROM", "SELECT x FROM `tab" + "A" * 9_000 + "`",
+		            "sElEcT a FrOm tabGL Entry JOIN tabAccount"):
+			with self.subTest(sql=sql[:30]):
+				_explain_execution_error(
+					DriverError(1054, "Unknown column 'z' in 'SELECT'"), sql)
+
+	def test_an_exception_that_cannot_even_be_printed_still_answers(self):
+		class Unprintable(Exception):
+			def __str__(self):
+				raise RuntimeError("boom")
+
+		self.assertTrue(_explain_execution_error(Unprintable(), "SELECT 1"))
+
+	def test_an_error_this_does_not_explain_is_passed_through_unchanged(self):
+		raw = "(1213, 'Deadlock found when trying to get lock')"
+		self.assertEqual(_explain_execution_error(DriverError(raw), "SELECT 1"), raw)
