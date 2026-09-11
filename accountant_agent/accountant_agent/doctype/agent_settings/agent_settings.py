@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -46,7 +45,11 @@ from frappe.model.document import Document
 # whole reasoning and for how a single site overrides a value.
 from accountant_agent.agent_config import get_agent_server_url, get_ocr_languages
 
-_USAGE_REQUEST_TIMEOUT_SECONDS: int = 10
+#: The usage figures shown in Agent Settings. Twenty rather than ten: this is
+#: a live read against the agent server, and a widget that gives up in ten
+#: seconds shows a customer an error about their balance whenever the server
+#: is merely busy — which is exactly when they came to look at it.
+_USAGE_REQUEST_TIMEOUT_SECONDS: int = 20
 
 
 def hash_api_key(api_key: str) -> str:
@@ -121,7 +124,7 @@ class AgentSettings(Document):
             )
 
 
-def _get_own_settings_doc(email: str) -> Optional[Document]:
+def _get_own_settings_doc(email: str) -> Document | None:
     """The caller's OWN Agent Settings record, or None.
 
     Ownership, not merely existence, is the check. ``email`` arrives from the
@@ -141,7 +144,7 @@ def _get_own_settings_doc(email: str) -> Optional[Document]:
 
 
 @frappe.whitelist()
-def get_agent_settings_name(email: str) -> Optional[str]:
+def get_agent_settings_name(email: str) -> str | None:
     """Document name of the caller's own Agent Settings record for this email."""
     doc = _get_own_settings_doc(email)
     return doc.name if doc else None

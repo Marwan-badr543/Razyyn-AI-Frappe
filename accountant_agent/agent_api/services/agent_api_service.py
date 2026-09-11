@@ -176,6 +176,7 @@ _DENIED_COLUMN_PATTERNS: list[re.Pattern] = [
 		r"\bencryption_key\b",
 		r"\breset_password_key\b",
 		r"\bsocial_login_userid\b",
+		r"\bapi_key\b",
 	]
 ]
 
@@ -190,7 +191,19 @@ DEFAULT_MAX_RESULT_ROWS: int = 500
 #: releases the *caller*, but the database keeps running the abandoned query and
 #: keeps contending with the customer's own postings. Only the database can stop
 #: it, so the limit has to be set here.
-DEFAULT_QUERY_TIMEOUT_SECONDS: int = 30
+#:
+#: THIS IS THE CLOCK THAT MUST EXPIRE FIRST, AND IT PAIRS WITH THE AGENT.
+#:     `ERP_STATEMENT_TIMEOUT_SECONDS` in the agent's agent/erp/transport.py
+#:     restates this figure, and the agent's own HTTP budget is set to this plus
+#:     headroom. Both used to be 30, which made the race a coin flip: half the
+#:     time the agent gave up first and told the customer it could not reach
+#:     their system, for a query this limit was about to refuse properly.
+#:
+#:     Sixty rather than thirty because a year of ledger aggregated across a
+#:     large table legitimately takes more than thirty seconds, and refusing
+#:     that is refusing ordinary accounting work. Raising it further for a site
+#:     means raising the agent's ceiling with it — see that file.
+DEFAULT_QUERY_TIMEOUT_SECONDS: int = 60
 
 #: The only two information_schema views the agent has a reason to read. The
 #: audit agent discovers the customer's ledger tables and their columns through

@@ -12,30 +12,33 @@
 	--line-height-normal: 1.5;
 	--line-height-body: 1.65;
 
-	/* Brand Colors (Indigo Accent) */
-	--color-accent: #4f46e5;
-	--color-accent-hover: #4338ca;
-	--color-accent-light: rgba(79, 70, 229, 0.1);
-	--color-accent-glow: rgba(79, 70, 229, 0.05);
-	--color-accent-shadow: rgba(79, 70, 229, 0.25);
-	--color-accent-disabled: #c7d2fe; /* Lightened/desaturated indigo (family match) */
+	/* Brand Colors (Violet-Indigo Accent — deeper and slightly warmer than a
+	 * stock Tailwind indigo, so the product reads as its own rather than as
+	 * "the default admin-panel purple") */
+	--color-accent: #5b45e0;
+	--color-accent-hover: #4c37c9;
+	--color-accent-light: rgba(91, 69, 224, 0.1);
+	--color-accent-glow: rgba(91, 69, 224, 0.05);
+	--color-accent-shadow: rgba(91, 69, 224, 0.25);
+	--color-accent-disabled: #cec4f7; /* Lightened/desaturated (family match) */
 
 	/* Neutrals (Cool Slate/Gray Bias) */
-	--bg-page: #f8fafc;        /* Level 1: Page background */
+	--bg-page: #f7f7fb;        /* Level 1: Page background — a hair warmer than pure slate */
 	--bg-panel: #ffffff;       /* Level 2: Main Panels / Cards */
-	--bg-raised: #f1f5f9;      /* Level 3: Inputs / Secondary Header / Raised surfaces */
+	--bg-raised: #f1f0f9;      /* Level 3: Inputs / Secondary Header / Raised surfaces — tinted toward the accent instead of neutral gray */
 
-	--text-primary: #0f172a;   /* Slate-900 */
-	--text-muted: #64748b;     /* Slate-500 */
+	--text-primary: #16152b;   /* Near-black with a hint of the accent hue, not pure slate */
+	--text-muted: #66647f;
 	--text-on-accent: #ffffff;
-	--border-color: #e2e8f0;   /* Slate-200 */
+	--border-color: #e5e3f0;
 
-	/* Sidebar Colors (Always Dark Slate for professional restraint - deliberate choice) */
-	--sidebar-bg: #0f172a;
+	/* Sidebar Colors (deep violet-black, not neutral slate — ties the one
+	 * always-dark surface in the light theme back to the brand color) */
+	--sidebar-bg: #14122b;
 	--sidebar-text: #f8fafc;
-	--sidebar-text-muted: #94a3b8;
-	--sidebar-hover: #1e293b;
-	--sidebar-active: #1e293b;
+	--sidebar-text-muted: #928fb0;
+	--sidebar-hover: #201d3f;
+	--sidebar-active: #201d3f;
 
 	/* Semantic Colors (Separate from brand accent) */
 	--color-success: #10b981;  /* Emerald-500 */
@@ -99,7 +102,7 @@
 	--chat-border: var(--border-color);
 	--chat-text: var(--text-primary);
 	--chat-text-muted: var(--text-muted);
-	--user-bubble: linear-gradient(135deg, var(--color-accent), #6366f1);
+	--user-bubble: linear-gradient(135deg, var(--color-accent), #7c6cf0);
 	--ai-bubble: var(--bg-panel);
 
 	/* UI Constants */
@@ -130,12 +133,12 @@
 	--sidebar-active: #0f172a;
 
 	/* Brand Adjustments for Dark Mode */
-	--color-accent: #6366f1;   /* Lighter Indigo-500 for contrast */
-	--color-accent-hover: #4f46e5;
-	--color-accent-light: rgba(99, 102, 241, 0.15);
-	--color-accent-glow: rgba(99, 102, 241, 0.08);
-	--color-accent-shadow: rgba(99, 102, 241, 0.4);
-	--color-accent-disabled: #3730a3; /* Lighter/desaturated for dark mode (family match) */
+	--color-accent: #7c6cf0;   /* Lightened for contrast against the dark panel */
+	--color-accent-hover: #5b45e0;
+	--color-accent-light: rgba(124, 108, 240, 0.15);
+	--color-accent-glow: rgba(124, 108, 240, 0.08);
+	--color-accent-shadow: rgba(124, 108, 240, 0.4);
+	--color-accent-disabled: #3b2f8f; /* Lighter/desaturated for dark mode (family match) */
 
 	/* Semantic Adjustments for Dark Mode */
 	--color-success-light: rgba(16, 185, 129, 0.15);
@@ -150,7 +153,7 @@
 	--shadow-card-auth: 0 10px 30px rgba(0, 0, 0, 0.4);
 	--shadow-card-auth-hover: 0 15px 35px rgba(0, 0, 0, 0.5);
 	--shadow-card-input: 0 4px 20px rgba(0, 0, 0, 0.3);
-	--shadow-card-input-focus: 0 4px 24px rgba(99, 102, 241, 0.2);
+	--shadow-card-input-focus: 0 4px 24px rgba(124, 108, 240, 0.2);
 	--shadow-dropdown: 0 10px 25px rgba(0, 0, 0, 0.5);
 	--shadow-popup-box: 0 4px 24px rgba(0, 0, 0, 0.4);
 	--shadow-plan-card: 0 4px 15px rgba(0, 0, 0, 0.3);
@@ -212,7 +215,7 @@
 	margin: auto;
 	padding: 35px;
 	border: 1px solid var(--chat-border);
-	border-radius: 16px;
+	border-radius: 20px;
 	background-color: var(--chat-card-bg);
 	box-shadow: var(--shadow-card-auth);
 	transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -312,7 +315,7 @@
 	height: 100%;
 	width: 100%;
 	border: 1px solid var(--chat-border);
-	border-radius: 16px;
+	border-radius: 20px;
 	background-color: var(--chat-card-bg);
 	overflow: hidden;
 	box-shadow: var(--shadow-card-input);
@@ -516,6 +519,69 @@
 	border-radius: 50%;
 	background-color: var(--chat-primary);
 	animation: pulse 2s infinite;
+}
+
+/* Header Broadcast Banner */
+.agent-header-banner {
+	flex: 1;
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	margin: 0 16px;
+	min-width: 0;
+}
+
+.agent-banner-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 14px;
+	border-radius: 20px;
+	font-size: 12.5px;
+	font-weight: 500;
+	background: linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(239, 68, 68, 0.08));
+	border: 1px solid rgba(245, 158, 11, 0.35);
+	color: var(--text-primary);
+	max-width: 100%;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+	transition: all 0.2s ease;
+}
+
+.agent-banner-icon {
+	color: #f59e0b;
+	font-size: 13px;
+	flex-shrink: 0;
+	animation: banner-wiggle 3s infinite ease-in-out;
+}
+
+.agent-banner-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 500px;
+}
+
+@keyframes banner-wiggle {
+	0%, 100% { transform: rotate(0deg); }
+	10%, 30% { transform: rotate(-8deg); }
+	20%, 40% { transform: rotate(8deg); }
+	50% { transform: rotate(0deg); }
+}
+
+@media (max-width: 768px) {
+	.agent-chat-header {
+		flex-wrap: wrap;
+		gap: 10px;
+	}
+	.agent-header-banner {
+		order: 3;
+		width: 100%;
+		margin: 8px 0 0 0;
+		justify-content: flex-start;
+	}
+	.agent-banner-text {
+		max-width: 100%;
+	}
 }
 
 /* Specific Agent Colors for Toggle Button Icon */
@@ -815,7 +881,7 @@
 	display: flex;
 	flex-direction: column;
 	border: 1px solid var(--chat-border);
-	border-radius: 16px;
+	border-radius: 20px;
 	background-color: var(--chat-card-bg);
 	box-shadow: var(--shadow-card-input);
 	padding: 12px 14px 10px 14px;
@@ -1537,6 +1603,76 @@
 	color: var(--chat-text-muted);
 }
 
+/* A tool call is a subtask OF the node/desk running it, not a sibling step. */
+.thinking-step-item.nested {
+	margin-left: 18px;
+	font-size: 11.5px;
+	opacity: 0.9;
+}
+
+/* A desk hand-off (auto multi-agent run) is a bigger milestone than a node
+ * or a tool call — bolder and never indented, whichever step preceded it. */
+.thinking-step-item.milestone {
+	font-weight: 600;
+	color: var(--chat-text);
+	margin-top: 2px;
+}
+
+.thinking-step-count {
+	font-weight: 600;
+	opacity: 0.7;
+}
+
+/* The plan for a multi-desk "auto" run, shown before any step has one. */
+.thinking-plan-banner {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--chat-text);
+	padding-bottom: 8px;
+	margin-bottom: 6px;
+	border-bottom: 1px dashed var(--chat-border);
+}
+
+.thinking-plan-banner i {
+	color: var(--chat-primary);
+}
+
+/* Which desk answered — most worth showing under 'auto', where nobody named
+ * one themselves. Reuses the AGENT_DEFINITIONS badge_class palette already
+ * used by the dropdown selector, so a desk's colour means the same thing in
+ * both places. */
+.thinking-agent-badge {
+	display: inline-flex;
+	align-items: center;
+	margin-left: 8px;
+	padding: 1px 8px;
+	border-radius: 10px;
+	font-size: 10.5px;
+	font-weight: 700;
+	letter-spacing: 0.02em;
+	background-color: var(--color-accent-light);
+	color: var(--chat-primary-hover);
+	vertical-align: middle;
+}
+
+.thinking-agent-badge.agent-type-analyse {
+	background-color: var(--color-info-light);
+	color: var(--color-info);
+}
+
+.thinking-agent-badge.agent-type-audit {
+	background-color: var(--color-warning-light);
+	color: var(--color-warning);
+}
+
+.thinking-agent-badge.agent-type-auto {
+	background-color: var(--color-success-light);
+	color: var(--color-success);
+}
+
 .thinking-reasoning-block {
 	border-left: 3px solid var(--chat-primary);
 	padding-left: 12px;
@@ -1662,18 +1798,6 @@
 	pointer-events: none;
 	transform: none;
 	box-shadow: none;
-}
-
-/* Ensure headings inside user message bubbles are white */
-.agent-msg-row.user .agent-msg-bubble h1,
-.agent-msg-row.user .agent-msg-bubble h2,
-.agent-msg-row.user .agent-msg-bubble h3,
-.agent-msg-row.user .agent-msg-bubble h4,
-.agent-msg-row.human .agent-msg-bubble h1,
-.agent-msg-row.human .agent-msg-bubble h2,
-.agent-msg-row.human .agent-msg-bubble h3,
-.agent-msg-row.human .agent-msg-bubble h4 {
-	color: var(--text-on-accent) !important;
 }
 
 /* RTL Layout Direction Support */
@@ -1863,7 +1987,7 @@
 	margin: 8px 0;
 	padding: 10px 12px;
 	border: 1px solid var(--chat-border, #e5e7eb);
-	border-left: 3px solid var(--chat-accent, #6366f1);
+	border-left: 3px solid var(--chat-accent, #7c6cf0);
 	border-radius: 8px;
 	background: var(--ai-bubble, rgba(99, 102, 241, 0.04));
 }

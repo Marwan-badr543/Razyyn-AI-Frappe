@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -14,8 +13,8 @@ from base64 import b64decode, b64encode
 from html import escape, unescape
 from typing import Optional
 
-import requests
 import frappe
+import requests
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils.password import get_decrypted_password
@@ -96,7 +95,7 @@ def _assert_signed_in() -> str:
 	return user
 
 
-def get_agent_settings_doc(email: str) -> Optional[Document]:
+def get_agent_settings_doc(email: str) -> Document | None:
 	"""The CALLER'S OWN Agent Settings record for this email, or None.
 
 	Ownership is the check, not existence. Without it, any signed-in ERP user —
@@ -166,12 +165,15 @@ def register_agent_on_server(email: str, password: str, company_name: str, api_k
 		"company_url": frappe.utils.get_url()
 	}
 	try:
-		response = requests.post(f"{get_agent_server_url()}/users/", json=payload, timeout=15)
+		response = requests.post(
+			f"{get_agent_server_url()}/users/", json=payload,
+			timeout=AGENT_REGISTER_TIMEOUT,
+		)
 		if response.status_code != 201:
 			error_msg = response.json().get("detail", "Registration failed.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
 	except requests.exceptions.RequestException as e:
-		frappe.log_error(title="Accountant Agent Auth", message=f"Agent registration request error: {str(e)}")
+		frappe.log_error(title="Accountant Agent Auth", message=f"Agent registration request error: {e!s}")
 		frappe.throw(_("Could not connect to Agent Server. Please make sure the server is running."))
 
 
@@ -189,7 +191,10 @@ def login_agent_on_server(email: str, password: str) -> tuple:
 		"password": password
 	}
 	try:
-		response = requests.post(f"{get_agent_server_url()}/auth/login", json=login_payload, timeout=15)
+		response = requests.post(
+			f"{get_agent_server_url()}/auth/login", json=login_payload,
+			timeout=AGENT_LOGIN_TIMEOUT,
+		)
 		if response.status_code != 200:
 			error_msg = response.json().get("detail", "Login failed. Check your email and password.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
@@ -197,7 +202,7 @@ def login_agent_on_server(email: str, password: str) -> tuple:
 		token_data = response.json()
 		return token_data.get("access_token"), token_data.get("refresh_token")
 	except requests.exceptions.RequestException as e:
-		frappe.log_error(title="Accountant Agent Auth", message=f"Agent login request error: {str(e)}")
+		frappe.log_error(title="Accountant Agent Auth", message=f"Agent login request error: {e!s}")
 		frappe.throw(_("Could not connect to Agent Server. Please make sure the server is running."))
 
 
@@ -334,7 +339,7 @@ def _exchange_refresh_token(settings_name: str, email: str) -> tuple:
 		response = requests.post(
 			f"{get_agent_server_url()}/auth/refresh",
 			json={"refresh_token": refresh_token},
-			timeout=15,
+			timeout=AGENT_REFRESH_TIMEOUT,
 		)
 	except Exception as exc:
 		# A network failure is NOT an ended session. Saying nothing here leaves
@@ -585,9 +590,9 @@ def end_agent_session(email: str) -> None:
 
 def save_agent_settings(
 	email: str,
-	api_key: Optional[str] = None,
-	access_token: Optional[str] = None,
-	refresh_token: Optional[str] = None,
+	api_key: str | None = None,
+	access_token: str | None = None,
+	refresh_token: str | None = None,
 ) -> None:
 	"""Create or update the caller's Agent Settings record.
 
@@ -683,10 +688,10 @@ def deprecate_previous_plans(session_id: str) -> None:
 							json.dumps(plan_data, ensure_ascii=False)
 						)
 				except Exception as json_err:
-					frappe.log_error(title="Accountant Agent Deprecate Plan", message=f"Error deprecating plan message {msg.name}: {str(json_err)}")
+					frappe.log_error(title="Accountant Agent Deprecate Plan", message=f"Error deprecating plan message {msg.name}: {json_err!s}")
 		frappe.db.commit()
 	except Exception as e:
-		frappe.log_error(title="Accountant Agent Deprecate Plan", message=f"Error in deprecate_previous_plans: {str(e)}")
+		frappe.log_error(title="Accountant Agent Deprecate Plan", message=f"Error in deprecate_previous_plans: {e!s}")
 
 
 def save_chat_history(session_id: str, sender: str, content: str) -> None:
@@ -706,7 +711,7 @@ def save_chat_history(session_id: str, sender: str, content: str) -> None:
 		doc.insert(ignore_permissions=True)
 		frappe.db.commit()
 	except Exception as e:
-		frappe.log_error(title="Accountant Agent Chat", message=f"Error saving user message to history: {str(e)}")
+		frappe.log_error(title="Accountant Agent Chat", message=f"Error saving user message to history: {e!s}")
 
 
 def save_chat_event_if_not_duplicate(session_id: str, sender: str, content: str) -> None:
@@ -722,7 +727,7 @@ def save_chat_event_if_not_duplicate(session_id: str, sender: str, content: str)
 			return
 		save_chat_history(session_id, sender, content)
 	except Exception as e:
-		frappe.log_error(title="Accountant Agent Chat Event", message=f"Error checking/saving chat event: {str(e)}")
+		frappe.log_error(title="Accountant Agent Chat Event", message=f"Error checking/saving chat event: {e!s}")
 
 
 def build_history_payload(session_id: str) -> str:
@@ -926,7 +931,7 @@ def get_connection_status(agent_email: str | None = None) -> dict:
 	user = frappe.session.user
 	if user == "Guest" or not agent_email:
 		return {"connected": False, "email": None}
-	
+
 	try:
 		doc = get_agent_settings_doc(agent_email)
 		if doc:
@@ -934,8 +939,8 @@ def get_connection_status(agent_email: str | None = None) -> dict:
 			if token:
 				return {"connected": True, "email": doc.email}
 	except Exception as e:
-		frappe.log_error(title="Accountant Agent Connect", message=f"Error checking connection status: {str(e)}")
-	
+		frappe.log_error(title="Accountant Agent Connect", message=f"Error checking connection status: {e!s}")
+
 	return {"connected": False, "email": None}
 
 
@@ -945,25 +950,25 @@ def authenticate_agent(mode: str, email: str, password: str, company_name: str |
 	user = frappe.session.user
 	if user == "Guest":
 		frappe.throw(_("Please log in to ERPNext first."))
-	
+
 	if not email or not password:
 		frappe.throw(_("Email and password are required."))
 
 	assert_agent_account_is_connectable(email)
-	
+
 	if mode == "signup":
 		if not company_name:
 			frappe.throw(_("Company Name is required for registration."))
-		
+
 		# Generate new API key UUID
 		api_key_uuid = str(uuid.uuid4())
-		
+
 		if get_agent_settings_doc(email):
 			frappe.throw(_(f"Agent Settings record already exists for {email}."))
-			
+
 		# Store email & key local first
 		save_agent_settings(email, api_key=api_key_uuid)
-		
+
 		# Create the user on server
 		try:
 			register_agent_on_server(email, password, company_name, api_key_uuid)
@@ -974,11 +979,11 @@ def authenticate_agent(mode: str, email: str, password: str, company_name: str |
 				frappe.delete_doc("Agent Settings", doc.name, ignore_permissions=True)
 				frappe.db.commit()
 			raise e
-		
+
 		# Automatically login to acquire tokens
 		access_token, refresh_token = login_agent_on_server(email, password)
 		save_agent_settings(email, access_token=access_token, refresh_token=refresh_token)
-		
+
 	elif mode == "login":
 		# Authenticate with agent server
 		access_token, refresh_token = login_agent_on_server(email, password)
@@ -988,7 +993,7 @@ def authenticate_agent(mode: str, email: str, password: str, company_name: str |
 			frappe.throw(_("Agent settings not found for this email. Please sign up first."))
 
 		save_agent_settings(email, access_token=access_token, refresh_token=refresh_token)
-		
+
 	else:
 		frappe.throw(_("Invalid mode specified."))
 
@@ -1022,7 +1027,7 @@ def get_latest_plan_message(session_id: str, lock: bool = False):
 					# Return fresh doc after lock is acquired
 					return frappe.get_doc("Agent Chat History", msg.name)
 				except Exception as e:
-					frappe.log_error(title="Accountant Agent Plan Lock", message=f"Database lock timeout or error: {str(e)}")
+					frappe.log_error(title="Accountant Agent Plan Lock", message=f"Database lock timeout or error: {e!s}")
 					frappe.throw(_("Could not acquire lock on the plan record. Please try again."))
 			return msg
 	return None
@@ -1071,7 +1076,7 @@ def send_message(
 				latest_plan.save(ignore_permissions=True)
 				frappe.db.commit()
 		except Exception as e:
-			frappe.log_error(title="Accountant Agent Plan Status Update", message=f"Error updating plan status JSON: {str(e)}")
+			frappe.log_error(title="Accountant Agent Plan Status Update", message=f"Error updating plan status JSON: {e!s}")
 
 	# THE CUSTOMER'S OWN WORDS ALWAYS GO INTO THEIR TRANSCRIPT.
 	#
@@ -1272,12 +1277,18 @@ def process_agent_message_background(
 					# with every pipeline rename — and when it falls behind it
 					# does not fail, it quietly captions every step
 					# "Processing...". The node name still travels for logging.
+					#
+					# `agent` is which desk this node belongs to — stream_adapter.py
+					# stamps it onto every event for every desk, named or auto-
+					# routed. Without it here, a run that changed desks mid-way
+					# (multi-agent auto) looked like one desk doing everything.
 					frappe.publish_realtime(
 						event="agent_node_start",
 						message={
 							"session_id": session_id,
 							"node": data_json.get("node", ""),
 							"label": data_json.get("label", ""),
+							"agent": data_json.get("agent", ""),
 						},
 						user=user,
 					)
@@ -1303,6 +1314,57 @@ def process_agent_message_background(
 							"tool": data_json.get("tool", ""),
 							"label": data_json.get("label", ""),
 							"input": data_json.get("input", {}),
+							"agent": data_json.get("agent", ""),
+						},
+						user=user,
+					)
+				elif current_event == "multi_agent_start":
+					# Fires once, before any sub-agent runs, with the whole
+					# lineup an "auto" classification chained together. This is
+					# the plan a multi-desk run is executing — the client can
+					# show it up front instead of only ever seeing one step at
+					# a time with no sense of how many are coming.
+					frappe.publish_realtime(
+						event="agent_multi_start",
+						message={
+							"session_id": session_id,
+							"agents": data_json.get("agents", []),
+							"total": data_json.get("total", 0),
+						},
+						user=user,
+					)
+				elif current_event == "agent_start":
+					frappe.publish_realtime(
+						event="agent_subagent_start",
+						message={
+							"session_id": session_id,
+							"agent": data_json.get("agent", ""),
+							"index": data_json.get("index", 0),
+							"total": data_json.get("total", 0),
+						},
+						user=user,
+					)
+				elif current_event == "agent_complete":
+					frappe.publish_realtime(
+						event="agent_subagent_complete",
+						message={
+							"session_id": session_id,
+							"agent": data_json.get("agent", ""),
+							"index": data_json.get("index", 0),
+							"total": data_json.get("total", 0),
+						},
+						user=user,
+					)
+				elif current_event == "compilation_start":
+					# Every sub-agent has answered; this is the master desk
+					# writing the one reply out of all of them. A customer
+					# watching the step list stall here without this would read
+					# it as a hang right after the last desk finished.
+					frappe.publish_realtime(
+						event="agent_compilation_start",
+						message={
+							"session_id": session_id,
+							"agents": data_json.get("agents", []),
 						},
 						user=user,
 					)
@@ -1332,7 +1394,7 @@ def process_agent_message_background(
 
 					frappe.publish_realtime(
 						event="agent_message_done",
-						message={"session_id": session_id, "response": spoken},
+						message={"session_id": session_id, "response": spoken, "agent": data_json.get("agent", "")},
 						user=user,
 					)
 
@@ -1540,7 +1602,12 @@ def _collapsible_question(spoken: str, questions: list, answer: str = "") -> str
 	if len(asked) > 1:
 		headline = _("{0} (and {1} more)").format(headline, len(asked) - 1)
 
-	body = "\n".join(f"{index}. {question}" for index, question in enumerate(asked[1:], 2))
+	# `question` is LLM-authored text (asked[1:] comes straight from the
+	# clarification payload), so it gets the same escape() treatment as
+	# `headline` (asked[0]) and the answer below — unescaped it is a stored
+	# XSS: this string is persisted verbatim into Agent Chat History.content
+	# and later rendered back through parse_markdown -> .html().
+	body = "\n".join(f"{index}. {escape(question)}" for index, question in enumerate(asked[1:], 2))
 
 	said = (answer or "").strip()
 	if said:
@@ -1689,7 +1756,7 @@ def cancel_agent(session_id: str, agent_email: str) -> dict:
 		headers["Content-Type"] = "application/json"
 		return requests.post(
 			f"{get_agent_server_url()}/agent/cancel",
-			json=payload, headers=headers, timeout=15,
+			json=payload, headers=headers, timeout=AGENT_CANCEL_TIMEOUT,
 		)
 
 	try:
@@ -1701,13 +1768,13 @@ def cancel_agent(session_id: str, agent_email: str) -> dict:
 		if response.status_code != 200:
 			error_msg = response.json().get("detail", "Error from Agent Server.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
-			
+
 		save_chat_event_if_not_duplicate(session_id, "ai", "⚠️ **Cancelled**")
 		update_chat_timestamp(session_id)
 		return {"success": True, "message": response.json().get("message")}
-		
+
 	except requests.exceptions.RequestException as e:
-		frappe.log_error(title="Accountant Agent Cancel", message=f"Agent cancel request exception: {str(e)}")
+		frappe.log_error(title="Accountant Agent Cancel", message=f"Agent cancel request exception: {e!s}")
 		frappe.throw(_("Unable to communicate with Agent Server. Please check if it's running."))
 
 
@@ -1732,7 +1799,7 @@ def get_run_state(session_id: str, agent_email: str) -> dict:
 			f"{get_agent_server_url()}/agent/chat/state",
 			params={"session_id": session_id},
 			headers=headers,
-			timeout=15,
+			timeout=AGENT_STATE_TIMEOUT,
 		)
 
 	try:
@@ -1750,7 +1817,7 @@ def get_run_state(session_id: str, agent_email: str) -> dict:
 
 
 @frappe.whitelist()
-def get_chat_history(session_id: str, limit: Optional[int] = None) -> list[dict]:
+def get_chat_history(session_id: str, limit: int | None = None) -> list[dict]:
 	"""The caller's own transcript for one session, most recent page first.
 
 	Bounded: a year-old reconciliation thread is not something to serialise in
@@ -1775,7 +1842,7 @@ def disconnect_agent(agent_email: str | None = None) -> dict:
 	"""Disconnects the agent for the given email by clearing the access token locally."""
 	if not agent_email:
 		return {"success": False}
-		
+
 	_assert_signed_in()
 
 	doc = get_agent_settings_doc(agent_email)
@@ -1816,7 +1883,8 @@ def delete_agent_account(agent_email: str) -> dict:
 	if user_id:
 		try:
 			response = requests.delete(
-				f"{get_agent_server_url()}/users/{user_id}", timeout=15
+				f"{get_agent_server_url()}/users/{user_id}",
+				timeout=AGENT_DELETE_ACCOUNT_TIMEOUT,
 			)
 			if response.status_code not in (200, 404):
 				frappe.throw(_("The agent account could not be deleted. Please try again."))
@@ -1840,7 +1908,7 @@ def get_chats() -> list[dict]:
 	user = frappe.session.user
 	if user == "Guest":
 		return []
-		
+
 	return frappe.get_all(
 		"Agent Chats",
 		filters={"owner": user},
@@ -1855,9 +1923,9 @@ def create_chat(title: str | None = None) -> dict:
 	user = frappe.session.user
 	if user == "Guest":
 		frappe.throw(_("Please log in to ERPNext first."))
-		
+
 	session_id = str(uuid.uuid4())
-	
+
 	doc = frappe.get_doc({
 		"doctype": "Agent Chats",
 		"session_id": session_id,
@@ -1866,7 +1934,7 @@ def create_chat(title: str | None = None) -> dict:
 	})
 	doc.insert(ignore_permissions=True)
 	frappe.db.commit()
-	
+
 	return {
 		"name": doc.name,
 		"session_id": doc.session_id,
@@ -1880,19 +1948,19 @@ def update_chat_title(session_id: str, title: str) -> dict:
 	"""Updates the title of a chat session."""
 	if not session_id or not title:
 		frappe.throw(_("Session ID and Title are required."))
-		
+
 	if not frappe.db.exists("Agent Chats", session_id):
 		frappe.throw(_("Chat session not found."))
-		
+
 	doc = frappe.get_doc("Agent Chats", session_id)
 	if doc.owner != frappe.session.user:
 		frappe.throw(_("Not authorized to rename this chat."))
-		
+
 	doc.title = title
 	doc.last_update = frappe.utils.now_datetime()
 	doc.save(ignore_permissions=True)
 	frappe.db.commit()
-	
+
 	return {
 		"name": doc.name,
 		"session_id": doc.session_id,
@@ -1906,17 +1974,17 @@ def delete_chat(session_id: str) -> dict:
 	"""Deletes a chat session (cascade deletion of messages is handled by the before_delete hook)."""
 	if not session_id:
 		return {"success": False}
-		
+
 	if not frappe.db.exists("Agent Chats", session_id):
 		return {"success": False}
-		
+
 	doc = frappe.get_doc("Agent Chats", session_id)
 	if doc.owner != frappe.session.user:
 		frappe.throw(_("Not authorized to delete this chat."))
-		
+
 	frappe.delete_doc("Agent Chats", session_id, ignore_permissions=True)
 	frappe.db.commit()
-	
+
 	return {"success": True}
 
 
@@ -1926,10 +1994,10 @@ def create_chat_with_id(session_id: str, title: str | None = None) -> dict:
 	user = frappe.session.user
 	if user == "Guest":
 		frappe.throw(_("Please log in to ERPNext first."))
-		
+
 	if not session_id:
 		frappe.throw(_("Session ID is required."))
-		
+
 	if frappe.db.exists("Agent Chats", session_id):
 		frappe.throw(_("Chat session already exists."))
 
@@ -1940,7 +2008,7 @@ def create_chat_with_id(session_id: str, title: str | None = None) -> dict:
 		uuid.UUID(str(session_id))
 	except (ValueError, AttributeError, TypeError):
 		frappe.throw(_("Invalid session identifier."), frappe.ValidationError)
-		
+
 	doc = frappe.get_doc({
 		"doctype": "Agent Chats",
 		"session_id": session_id,
@@ -1949,7 +2017,7 @@ def create_chat_with_id(session_id: str, title: str | None = None) -> dict:
 	})
 	doc.insert(ignore_permissions=True)
 	frappe.db.commit()
-	
+
 	return {
 		"name": doc.name,
 		"session_id": doc.session_id,
@@ -2011,6 +2079,53 @@ AGENT_STREAM_TIMEOUT: tuple[int, int] = (
 	AGENT_CONNECT_TIMEOUT_SECONDS,
 	AGENT_TASK_TIMEOUT_SECONDS,
 )
+
+# ─── The short calls to the agent server, one budget per task ───────────────
+#
+# WHY THESE ARE NAMED AND NOT A REPEATED `timeout=15`
+#     Six calls in this file shared one anonymous number. They are not one kind
+#     of call: hashing a password is slow BY DESIGN, deleting an account
+#     cascades across a dozen tables, and cancelling is a customer's finger on
+#     a stop button. One figure had to be wrong for most of them, and the way
+#     it was wrong is the expensive way — a registration that really was
+#     succeeding was reported to the customer as a failure, and they registered
+#     again.
+#
+#     Every budget below is a (connect, read) pair for the same reason
+#     AGENT_STREAM_TIMEOUT is: failing to REACH the server is immediate and
+#     worth reporting fast, while a server that is working needs room to finish.
+#     A single scalar forces one of those two to be wrong.
+#
+#     All of them are generous rather than tight. On this side of the wire a
+#     timeout does not save anything — the work continues on the server — it
+#     only decides whether the customer is told the truth about it.
+
+#: Creating the account. Hashes a password (deliberately slow), writes the row
+#: and mints the first tokens. Expiring here leaves an account that may well
+#: exist, and a customer who will try to create it again.
+AGENT_REGISTER_TIMEOUT: tuple[int, int] = (10, 30)
+
+#: Signing in. A password verification and a token mint — the same deliberate
+#: slowness as above, without the writes.
+AGENT_LOGIN_TIMEOUT: tuple[int, int] = (10, 30)
+
+#: Renewing an expired token, which sits on the critical path of EVERY request
+#: this app makes. Expiring here fails the customer's turn, so it is not tight;
+#: it is only shorter than the rest because there is nothing slow behind it.
+AGENT_REFRESH_TIMEOUT: tuple[int, int] = (10, 20)
+
+#: Stopping a run. The customer has pressed the button and is watching, so this
+#: is the one call where waiting is itself the failure.
+AGENT_CANCEL_TIMEOUT: tuple[int, int] = (5, 20)
+
+#: Reading where a conversation stands. A UI read; nothing is lost by giving up
+#: and asking again.
+AGENT_STATE_TIMEOUT: tuple[int, int] = (10, 20)
+
+#: Deleting an account, which cascades across every table that holds the
+#: customer's history. The slowest of these by a distance, and the one where
+#: giving up early leaves a half-deleted account nobody knows about.
+AGENT_DELETE_ACCOUNT_TIMEOUT: tuple[int, int] = (10, 60)
 
 MAX_UPLOAD_SIZE_BYTES: int = 100 * 1024 * 1024  # 100 MB: full-year ledger exports are large
 
@@ -2139,7 +2254,7 @@ def _upload_root(user: str) -> str:
 	return frappe.get_site_path("private", "files", AGENT_UPLOAD_DIR, _owner_token(user))
 
 
-def resolve_agent_upload_path(file_url: str, user: str) -> Optional[str]:
+def resolve_agent_upload_path(file_url: str, user: str) -> str | None:
 	"""Filesystem path for a stored attachment URL, or None if it is not the caller's.
 
 	Accepts the private form written since this app started storing uploads
@@ -2554,3 +2669,32 @@ def download_file(file_url: str) -> None:
 	frappe.local.response.display_content_as = "inline"
 	if content_type:
 		frappe.local.response.content_type = content_type
+
+
+@frappe.whitelist()
+def get_active_banner_message() -> dict:
+	"""Fetch the currently active broadcast banner from the agent server.
+
+	Returns a dict with `message`: string or None, `start_time`, `end_time`.
+	"""
+	_assert_signed_in()
+	try:
+		response = requests.get(
+			f"{get_agent_server_url()}/banners/active",
+			timeout=5,
+		)
+		if response.status_code == 200:
+			data = response.json()
+			return {
+				"message": data.get("message"),
+				"start_time": data.get("start_time"),
+				"end_time": data.get("end_time"),
+			}
+	except Exception as exc:
+		frappe.log_error(
+			title="Accountant Agent: Banner Fetch",
+			message=f"Could not fetch active banner: {exc}",
+		)
+	return {"message": None}
+
+

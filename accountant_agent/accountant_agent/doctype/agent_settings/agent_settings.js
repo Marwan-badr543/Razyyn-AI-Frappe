@@ -93,6 +93,22 @@ function render_usage_dashboard(frm, data, email) {
 
 	let total_theme = get_status_theme(total);
 
+	// Every plan's badge colours, in one place.
+	//
+	// These used to be three parallel nested ternaries over `data.plan`, one
+	// per CSS property, each ending in the Free styling — so a tier none of
+	// them named (as `custom` was) silently showed the customer a Free badge.
+	// A tier added to the platform is one row here now, and a tier that is
+	// missing falls back in one visible place instead of three quiet ones.
+	const PLAN_COLOURS = {
+		free:   { background: '#f3f4f6', text: '#4b5563', border: '#e5e7eb' },
+		plus:   { background: '#ecfdf5', text: '#059669', border: '#a7f3d0' },
+		pro:    { background: '#eff6ff', text: '#2563eb', border: '#bfdbfe' },
+		ultra:  { background: '#f5f3ff', text: '#7c3aed', border: '#ddd6fe' },
+		custom: { background: '#faf5ff', text: '#a855f7', border: '#e9d5ff' },
+	};
+	const plan_colours = PLAN_COLOURS[data.plan] || PLAN_COLOURS.free;
+
 	let html = `
 		<div class="agent-usage-card" style="
 			background: var(--card-bg, #ffffff);
@@ -115,9 +131,9 @@ function render_usage_dashboard(frm, data, email) {
 							text-transform: uppercase;
 							padding: 2px 8px;
 							border-radius: 12px;
-							background-color: ${data.plan === 'ultra' ? '#f5f3ff' : data.plan === 'pro' ? '#eff6ff' : data.plan === 'plus' ? '#ecfdf5' : '#f3f4f6'};
-							color: ${data.plan === 'ultra' ? '#7c3aed' : data.plan === 'pro' ? '#2563eb' : data.plan === 'plus' ? '#059669' : '#4b5563'};
-							border: 1px solid ${data.plan === 'ultra' ? '#ddd6fe' : data.plan === 'pro' ? '#bfdbfe' : data.plan === 'plus' ? '#a7f3d0' : '#e5e7eb'};
+							background-color: ${plan_colours.background};
+							color: ${plan_colours.text};
+							border: 1px solid ${plan_colours.border};
 						">
 							${__(data.plan || 'free')}
 						</span>

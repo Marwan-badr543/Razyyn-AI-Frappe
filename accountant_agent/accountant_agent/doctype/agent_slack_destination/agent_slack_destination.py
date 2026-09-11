@@ -1,8 +1,8 @@
-# Copyright (c) 2026, Marwan Badr and contributors
+# Copyright (c) 2026, Razyyn and contributors
 # For license information, please see license.txt
 
 from frappe.model.document import Document
 
 
-class AgentWriteAllowedDoctype(Document):
+class AgentSlackDestination(Document):
 	pass

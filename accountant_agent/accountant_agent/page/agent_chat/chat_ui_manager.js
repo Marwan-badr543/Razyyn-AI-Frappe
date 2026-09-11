@@ -26,8 +26,8 @@ class ChatUIManager {
 					<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
 						<defs>
 							<linearGradient id="robotGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-								<stop offset="0%" stop-color="#4f46e5" />
-								<stop offset="100%" stop-color="#6366f1" />
+								<stop offset="0%" stop-color="#5b45e0" />
+								<stop offset="100%" stop-color="#7c6cf0" />
 							</linearGradient>
 						</defs>
 						<rect x="8" y="16" width="48" height="36" rx="10" fill="url(#robotGrad)" />
@@ -671,23 +671,52 @@ class ChatUIManager {
 		}
 	}
 
-	update_stream_status(msg_box, bubble_id, status_text, steps = []) {
+	// `stream` is the whole active_streams entry (optional — callers that
+	// still pass only 4 args get the old flat behaviour with no badge/plan/
+	// nesting, so nothing on a slow-to-update caller breaks silently).
+	update_stream_status(msg_box, bubble_id, status_text, steps = [], stream = null) {
 		this.hide_typing_indicator(msg_box);
 		let bubble_el = msg_box.find(`#${bubble_id}`);
 		if (bubble_el.length) {
 			let steps_list = bubble_el.find('.thinking-steps-list');
 			let msg_box_was_near_bottom = this.is_near_bottom(msg_box);
 			steps_list.empty();
-			
+
+			// The plan, when this is a multi-desk "auto" run: which desks are
+			// queued, before any of them has produced a single step. Without
+			// this a 3-desk run and a 1-desk run look identical until the
+			// second desk unexpectedly starts.
+			let plan = stream && stream.agents_plan;
+			if (plan && plan.length > 1) {
+				let plan_names = plan.map(a => this.chat.agent_display_name(a)).join(' → ');
+				steps_list.append(`
+					<div class="thinking-plan-banner">
+						<i class="fa fa-map-signs"></i>
+						<span>${__("Plan")}: ${plan_names}</span>
+					</div>
+				`);
+			}
+
 			if (steps && steps.length > 0) {
 				steps.forEach((step, idx) => {
 					let is_last = (idx === steps.length - 1);
 					let icon_class = is_last ? 'fa-cog fa-spin' : 'fa-check';
 					let icon_color = is_last ? 'var(--chat-primary)' : '#10a37f';
+					let row_class = 'thinking-step-item';
+					// A tool call is a subtask OF the node running it, not a
+					// sibling step — indent it under whichever node/agent
+					// milestone most recently started.
+					if (step.type === 'tool') row_class += ' nested';
+					if (step.type === 'agent') {
+						row_class += ' milestone';
+						icon_class = is_last ? 'fa-exchange fa-spin' : 'fa-flag-checkered';
+						icon_color = is_last ? 'var(--chat-primary)' : '#10a37f';
+					}
+					let count_suffix = (step.count && step.count > 1) ? ` <span class="thinking-step-count">(×${step.count})</span>` : '';
 					steps_list.append(`
-						<div class="thinking-step-item">
+						<div class="${row_class}">
 							<i class="fa ${icon_class}" style="color: ${icon_color}; font-size: 11px;"></i>
-							<span>${step.name}</span>
+							<span>${step.name}${count_suffix}</span>
 						</div>
 					`);
 				});
@@ -699,6 +728,17 @@ class ChatUIManager {
 					</div>
 				`);
 			}
+
+			// The badge: which desk is answering right now. Most worth
+			// showing under 'auto', where the person never named a desk
+			// themselves — without it, "auto" resolves invisibly.
+			let badge_el = bubble_el.find('.thinking-agent-badge');
+			if (stream && stream.current_agent) {
+				let badge_html = `<span class="thinking-agent-badge agent-type-${this.safe_css_token(stream.current_agent)}">${this.chat.agent_display_name(stream.current_agent)}</span>`;
+				if (badge_el.length) badge_el.replaceWith(badge_html);
+				else bubble_el.find('.thinking-header-title').after(badge_html);
+			}
+
 			bubble_el.find('.agent-thinking-wrapper').show();
 			if (msg_box_was_near_bottom) {
 				this.force_scroll_to_bottom(msg_box);
@@ -736,26 +776,49 @@ class ChatUIManager {
 		}
 	}
 
-	finalize_stream_bubble(msg_box, bubble_id, content, datetime, header_title) {
+	// `stream` is optional (see update_stream_status) — carries the resolved
+	// desk for the final badge and the step count that decides whether this
+	// breakdown is worth leaving open.
+	finalize_stream_bubble(msg_box, bubble_id, content, datetime, header_title, stream = null) {
 		this.hide_typing_indicator(msg_box);
 		let bubble_el = msg_box.find(`#${bubble_id}`);
 		let row_el = msg_box.find(`#row-${bubble_id}`);
 		if (bubble_el.length) {
 			bubble_el.removeClass('streaming-active');
-			
+
 			// Turn all step icons to checkmarks
 			let steps_list = bubble_el.find('.thinking-steps-list');
-			steps_list.find('.thinking-step-item i').removeClass('fa-cog fa-spin').addClass('fa-check').css('color', '#10a37f');
-			
+			steps_list.find('.thinking-step-item i, .thinking-step-item.milestone i')
+				.removeClass('fa-cog fa-spin fa-exchange').addClass('fa-check').css('color', '#10a37f');
+
 			if (header_title) {
 				bubble_el.find('.thinking-header-title').text(header_title);
 			}
-			
-			// Auto collapse accordion to clean the page but keep it toggleable
+
+			if (stream && stream.current_agent) {
+				let badge_el = bubble_el.find('.thinking-agent-badge');
+				let badge_html = `<span class="thinking-agent-badge agent-type-${this.safe_css_token(stream.current_agent)}">${this.chat.agent_display_name(stream.current_agent)}</span>`;
+				if (badge_el.length) badge_el.replaceWith(badge_html);
+				else bubble_el.find('.thinking-header-title').after(badge_html);
+			}
+
+			// A run with only one or two steps is a quick lookup; folding it
+			// away is tidy. A run with a real breakdown — several nodes, a
+			// tool called more than once, a desk hand-off — is the exact case
+			// "subtasks for a big task" exists to show, and it is the one
+			// moment that breakdown is complete. Auto-collapsing it away on
+			// the instant it finishes hid the answer to "what did it just do"
+			// right when that question was easiest to ask.
+			let step_count = (stream && stream.steps) ? stream.steps.length : 0;
 			let body = bubble_el.find('.thinking-body-content');
 			let icon = bubble_el.find('.thinking-header-icon');
-			body.slideUp(150);
-			icon.css('transform', 'rotate(0deg)');
+			if (step_count > 2) {
+				body.slideDown(150);
+				icon.css('transform', 'rotate(90deg)');
+			} else {
+				body.slideUp(150);
+				icon.css('transform', 'rotate(0deg)');
+			}
 
 
 
@@ -1120,12 +1183,37 @@ class ChatUIManager {
 		});
 	}
 
+	// Every path out of this function passes through here. marked.js (and the
+	// raw-HTML fallback below it) can both be made to emit a <script>, an
+	// onerror=, or a javascript: URL from LLM-authored or attacker-supplied
+	// text, so nothing leaves this function without going through DOMPurify
+	// first. If DOMPurify has not finished loading yet, the marked branch is
+	// skipped entirely in favour of the escaped fallback rather than ever
+	// emitting marked's raw, unsanitized HTML.
+	sanitize_html(html) {
+		if (window.DOMPurify) {
+			return window.DOMPurify.sanitize(html);
+		}
+		return html;
+	}
+
+	// `stream.current_agent`/`data.agent` is meant to be a short desk key
+	// ("ask", "analyse", ...), but it arrives over the realtime channel as a
+	// plain string, and it gets interpolated raw into a `class="agent-type-…"`
+	// attribute in two places below. A value containing a quote would break
+	// out of the attribute; restricting it to the character set an actual
+	// desk key uses closes that off without needing a full HTML-attribute
+	// escaper for a value that should never need one.
+	safe_css_token(value) {
+		return String(value || '').replace(/[^a-zA-Z0-9_-]/g, '');
+	}
+
 	parse_markdown(text) {
 		if (!text) return '';
 
-		if (window.marked) {
+		if (window.marked && window.DOMPurify) {
 			try {
-				return window.marked.parse(text);
+				return this.sanitize_html(window.marked.parse(text));
 			} catch (err) {
 				console.error("Marked parsing error:", err);
 			}
@@ -1248,7 +1336,7 @@ class ChatUIManager {
 		temp_output = temp_output.replace(/```(.*?)```/gs, '<pre><code>$1</code></pre>');
 		temp_output = temp_output.replace(/`(.*?)`/g, '<code>$1</code>');
 
-		return temp_output;
+		return this.sanitize_html(temp_output);
 	}
 
 	post_process_rendered_bubble(container) {
@@ -1318,7 +1406,7 @@ class ChatUIManager {
 					primaryColor: '#312e81', // Dark Indigo
 					primaryTextColor: '#f8fafc', // Light slate text
 					nodeTextColor: '#f8fafc',
-					primaryBorderColor: '#4f46e5', // Indigo border
+					primaryBorderColor: '#5b45e0', // Indigo border
 					lineColor: '#94a3b8', // Light slate lines
 					textColor: '#f8fafc',
 					background: '#0f172a'
@@ -1332,7 +1420,7 @@ class ChatUIManager {
 					primaryColor: '#e0e7ff', // Light Indigo
 					primaryTextColor: '#0f172a', // Dark slate text
 					nodeTextColor: '#0f172a',
-					primaryBorderColor: '#4f46e5', // Indigo border
+					primaryBorderColor: '#5b45e0', // Indigo border
 					lineColor: '#64748b', // Cool gray lines
 					textColor: '#0f172a',
 					background: '#ffffff'
