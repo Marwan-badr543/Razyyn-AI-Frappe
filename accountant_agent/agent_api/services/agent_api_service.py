@@ -12,6 +12,7 @@ Prohibitions (per three-layer rules):
   ❌ NO direct HTTP exceptions (e.g., HTTPException)
 """
 
+import difflib
 import json
 import re
 from datetime import timedelta
@@ -473,19 +474,164 @@ def _explain_missing_table(detail: str) -> str:
 	)
 
 
-def _explain_missing_column(detail: str) -> str:
-	"""Say the two things that make a column missing, in order of likelihood.
+#: The tables a query names. `tab` DocType names contain spaces, so the
+#: backticked form is matched first and the bare form only where there is no
+#: whitespace to lose.
+_QUERIED_TABLE_PATTERN: re.Pattern = re.compile(
+	r"(?:FROM|JOIN)\s+(?:`(tab[^`]+)`|(tab\S+))", re.IGNORECASE
+)
+
+#: How many tables of one query are resolved before giving up. A query naming
+#: more than this is not one an explanation is going to rescue, and each name
+#: costs a metadata read inside an error handler.
+_MAX_TABLES_EXPLAINED: int = 6
+
+
+def _queried_doctypes(sql: str) -> list[str]:
+	"""The DocTypes a query reads from, in the order it names them."""
+	found: list[str] = []
+	for backticked, bare in _QUERIED_TABLE_PATTERN.findall(sql or ""):
+		table = (backticked or bare).strip().strip("`,;")
+		doctype = table[3:]
+		if doctype and doctype not in found:
+			found.append(doctype)
+	return found[:_MAX_TABLES_EXPLAINED]
+
+
+def _columns_of(doctype: str) -> set[str]:
+	"""Every column a SELECT may name on this DocType's own table."""
+	meta = get_doctype_metadata(doctype)
+	columns = {
+		df.fieldname for df in meta.fields
+		if df.fieldname and df.fieldtype not in _CHILD_TABLE_FIELD_TYPES
+	}
+	columns.update({"name", "owner", "creation", "modified", "modified_by", "docstatus", "idx"})
+	if bool(getattr(meta, "istable", 0)):
+		columns.update({"parent", "parenttype", "parentfield"})
+	return columns
+
+
+def _child_doctypes_of(doctype: str) -> list[str]:
+	"""The DocTypes whose rows belong to this one."""
+	meta = get_doctype_metadata(doctype)
+	return [
+		df.options for df in meta.fields
+		if df.fieldtype in _CHILD_TABLE_FIELD_TYPES and df.options
+	]
+
+
+def _documents_holding(child: str) -> list[str]:
+	"""The DocTypes whose documents own rows of this child table.
+
+	Frappe records the relationship one way only — a parent lists its child
+	tables as fields — so the way back is a lookup on DocField. One indexed
+	read, and an empty list if anything about it goes wrong: a child table
+	whose parent cannot be named still gets the generic parent/child sentence,
+	which is worth more than an error.
+	"""
+	try:
+		return [
+			row.parent for row in frappe.get_all(
+				"DocField",
+				filters={"options": child, "fieldtype": ["in", list(_CHILD_TABLE_FIELD_TYPES)]},
+				fields=["parent"],
+				limit=3,
+			)
+		]
+	except Exception:
+		return []
+
+
+def _where_the_column_lives(column: str, sql: str) -> str:
+	"""Name the table that HAS this column, out of the ones the query touched.
+
+	WHY THE QUERY IS READ AND NOT JUST THE ERROR
+		MariaDB says `Unknown column 'account' in 'SELECT'`. It names the column
+		and it never names the table — so on a query that joins three tables the
+		agent is told something is wrong and given no way to work out which of
+		the three it is. It rewrote the same guess, and the same 1054 came back,
+		until the customer cancelled the run.
+
+		The query itself is in hand at the point this runs. Reading which tables
+		it named turns "call get_schema" — advice the agent had already been
+		given and could not act on — into the actual answer.
+
+	Returns "" when nothing better than the generic explanation can be said, so
+	the caller keeps its existing wording rather than printing a guess.
+	"""
+	doctypes = [name for name in _queried_doctypes(sql) if doctype_exists(name)]
+	if not doctypes:
+		return ""
+
+	own: dict[str, set[str]] = {name: _columns_of(name) for name in doctypes}
+
+	# It IS on one of them: the SELECT did not qualify it, or qualified it with
+	# the wrong alias. Qualifying it is the whole fix.
+	holders = [name for name, columns in own.items() if column in columns]
+	if holders:
+		return (
+			f"'{column}' is not on `tab{doctypes[0]}` but IS on "
+			f"`tab{holders[0]}` — qualify it as `tab{holders[0]}`.`{column}`."
+		)
+
+	# It is on the rows of one of them. This is the parent/child inversion, and
+	# naming the child table and the join is the difference between one more
+	# attempt and five.
+	for parent in doctypes:
+		for child in _child_doctypes_of(parent):
+			if doctype_exists(child) and column in _columns_of(child):
+				return (
+					f"'{column}' is not on `tab{parent}`; it is on its rows, in "
+					f"`tab{child}`. Join `tab{child}`.parent = `tab{parent}`.name."
+				)
+
+	# The query reads a child table and wants something off the document the
+	# rows belong to. This is the inversion the other way round, and it is the
+	# one the raw error is most misleading about: the column is perfectly real,
+	# it is simply one join away.
+	for child in doctypes:
+		if not bool(getattr(get_doctype_metadata(child), "istable", 0)):
+			continue
+		for parent in _documents_holding(child):
+			if doctype_exists(parent) and column in _columns_of(parent):
+				return (
+					f"`tab{child}` holds rows, not documents. '{column}' is on the "
+					f"document — join `tab{parent}`.name = `tab{child}`.parent."
+				)
+
+	# Neither. The commonest cause by far is a name from another system, and a
+	# near miss among the columns that DO exist is worth more than any advice.
+	everything = sorted({name for columns in own.values() for name in columns})
+	close = difflib.get_close_matches(column, everything, n=2, cutoff=0.7)
+	if close:
+		return (
+			f"There is no '{column}' on {', '.join(f'`tab{d}`' for d in doctypes[:3])}. "
+			f"Did you mean {' or '.join(close)}?"
+		)
+	return (
+		f"There is no '{column}' on {', '.join(f'`tab{d}`' for d in doctypes[:3])}. "
+		f"Call get_schema on the one you meant and use a name it lists."
+	)
+
+
+def _explain_missing_column(detail: str, sql: str = "") -> str:
+	"""Say WHERE the column actually is, and only then what it might be instead.
 
 	Either the column was never there — a name carried over from another system,
 	or invented — or it is real but on the other end of a parent/child join: a
 	row of Journal Entry Account has no posting_date, because the date belongs to
-	the Journal Entry it sits in.
+	the Journal Entry it sits in. Which of the two it is can be settled by
+	reading the query, so it is settled rather than described.
 	"""
 	match = _MISSING_COLUMN_PATTERN.search(detail)
 	if not match:
 		return detail
 
 	column = match.group(1).split(".")[-1]
+	located = _where_the_column_lives(column, sql) if sql else ""
+	if located:
+		return _correction_first(located, detail)
+
 	return _correction_first(
 		f"'{column}' is not a column of that table. Either it does not exist, or "
 		f"it is on the other side of a parent/child pair: a child row carries only "
@@ -495,7 +641,7 @@ def _explain_missing_column(detail: str) -> str:
 	)
 
 
-def _explain_execution_error(exc: Exception) -> str:
+def _explain_execution_error(exc: Exception, sql: str = "") -> str:
 	"""Turn a driver error into something the agent can act on in one try.
 
 	The agent is this endpoint's only caller and it is the thing that has to fix
@@ -507,17 +653,22 @@ def _explain_execution_error(exc: Exception) -> str:
 	with an unhandled traceback and the agent would be told nothing at all — the
 	same shape as the log_error title that raised inside the error handler.
 	"""
-	detail = str(exc)
+	# INSIDE THE GUARD, INCLUDING THIS. `str()` on an exception runs that
+	# exception's own `__str__`, which is the driver's code and not ours; one
+	# that raises would escape an error handler whose whole promise is that it
+	# cannot, and the agent would be told nothing at all.
+	detail = ""
 	try:
+		detail = str(exc)
 		number = _error_number(exc)
 		if number == _ERRNO_SYNTAX:
 			return _explain_syntax_error(detail)
 		if number == _ERRNO_NO_SUCH_TABLE:
 			return _explain_missing_table(detail)
 		if number == _ERRNO_NO_SUCH_COLUMN:
-			return _explain_missing_column(detail)
+			return _explain_missing_column(detail, sql)
 	except Exception:
-		return detail
+		return detail or "The query failed and the database gave no readable reason."
 	return detail
 
 
@@ -558,7 +709,7 @@ def validate_and_execute_query(sql_query: str, settings_user: str) -> dict:
 			timeout_seconds=_query_timeout_seconds(),
 		)
 	except Exception as exc:
-		raise QueryExecutionError(_explain_execution_error(exc)) from exc
+		raise QueryExecutionError(_explain_execution_error(exc, clean_query)) from exc
 
 	columns = list(result[0].keys()) if result else []
 	return {
