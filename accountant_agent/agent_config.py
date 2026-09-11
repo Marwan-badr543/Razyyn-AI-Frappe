@@ -79,7 +79,15 @@ def _from_file() -> dict:
 
 def get_setting(key: str) -> Any:
 	"""One setting, with the site's own configuration taking precedence."""
-	site_value = frappe.conf.get(f"accountant_agent_{key}") if frappe.conf else None
+	# Prefix is "accountant_", not "accountant_agent_": the app namespace is
+	# "accountant_agent" as a whole, and prefixing on top of a key that
+	# already starts with "agent_" (agent_server_url) produced
+	# "accountant_agent_agent_server_url" -- doubling "agent" and silently
+	# never matching the real site_config.json key every existing site
+	# actually has, "accountant_agent_server_url". Confirmed live: a site
+	# with that key correctly set still fell through to the 127.0.0.1
+	# built-in default because of this mismatch.
+	site_value = frappe.conf.get(f"accountant_{key}") if frappe.conf else None
 	if site_value not in (None, ""):
 		return site_value
 
