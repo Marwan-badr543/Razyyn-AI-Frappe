@@ -222,16 +222,12 @@ This ensures all DocTypes (`Agent Settings`, `Agent Write Policy`, `Agent Write 
 bench --site [your-site-name] migrate
 ```
 
-### Step 4: Configure the Agent Backend Server URL
-Specify the address of your Razyyn AI backend server. You can configure this globally in `site_config.json`:
+### Step 4 (optional): Point at a different Agent Backend Server
+The app ships already pointed at the shared Razyyn service (`https://api.razyyn.com`) —
+skip this step unless you run your own agent server (e.g. a local one for
+development). Override it per-site with:
 ```bash
 bench --site [your-site-name] set-config accountant_agent_server_url "http://127.0.0.1:8010"
-```
-*(For production, replace with your production agent domain, e.g. `https://api.razyyn.com`)*.
-
-Alternatively, define it in `apps/accountant_agent/.env`:
-```env
-ACCOUNTANT_AGENT_SERVER_URL=http://127.0.0.1:8010
 ```
 
 ### Step 5: Build Assets & Restart Bench

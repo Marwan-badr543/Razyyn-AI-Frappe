@@ -20,7 +20,6 @@ from accountant_agent import agent_config
 
 
 class TestConfiguration(FrappeTestCase):
-
 	def setUp(self):
 		# Each test starts from the file, not from whatever a previous test read.
 		agent_config._file_config = None
@@ -54,10 +53,12 @@ class TestConfiguration(FrappeTestCase):
 
 		ignored = subprocess.run(
 			["git", "check-ignore", agent_config._CONFIG_PATH],
-			cwd=app_root, capture_output=True,
+			cwd=app_root,
+			capture_output=True,
 		)
 		self.assertNotEqual(
-			ignored.returncode, 0,
+			ignored.returncode,
+			0,
 			"agent_config.json is excluded from version control",
 		)
 
@@ -73,13 +74,14 @@ class TestConfiguration(FrappeTestCase):
 		Overridden through `site_config.json`, which is the mechanism Frappe
 		administrators already know, rather than a second bespoke one.
 		"""
-		frappe.conf["accountant_agent_agent_server_url"] = "https://razyyn.example.com/"
+		frappe.conf["accountant_agent_server_url"] = "https://razyyn.example.com/"
 		try:
 			self.assertEqual(
-				agent_config.get_agent_server_url(), "https://razyyn.example.com",
+				agent_config.get_agent_server_url(),
+				"https://razyyn.example.com",
 			)
 		finally:
-			frappe.conf.pop("accountant_agent_agent_server_url", None)
+			frappe.conf.pop("accountant_agent_server_url", None)
 
 	def test_a_damaged_file_does_not_take_the_app_down(self):
 		"""It falls back to the built-in defaults and says so in the error log."""

@@ -44,9 +44,12 @@ import frappe
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_config.json")
 
 #: Used when the file is missing or unreadable — an installation should never
-#: be left with no address at all just because a file was damaged.
+#: be left with no address at all just because a file was damaged. The
+#: production address, not a developer's laptop: every real install needs
+#: this same shared service, and only a Razyyn developer running the service
+#: locally needs to override it down to localhost — not the other way round.
 _DEFAULTS: dict = {
-	"agent_server_url": "http://127.0.0.1:8010",
+	"agent_server_url": "https://api.razyyn.com",
 	"ocr_languages": "eng+ara",
 	"max_upload_files": 20,
 }
