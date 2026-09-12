@@ -675,6 +675,7 @@ class AccountantAgentChat {
 						<div class="agent-header-actions" style="display: flex; align-items: center; gap: 12px;">
 							<select class="agent-lang-selector form-control" style="width: 100px; padding: 2px 6px; height: 28px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; background-color: var(--chat-card-bg); color: var(--chat-text); border: 1px solid var(--chat-border);">
 								<option value="en" ${frappe.boot.lang === 'en' ? 'selected' : ''}>English</option>
+								<option value="fr" ${frappe.boot.lang === 'fr' ? 'selected' : ''}>Français</option>
 								<option value="ar" ${frappe.boot.lang === 'ar' ? 'selected' : ''}>العربية</option>
 							</select>
 							<button class="agent-theme-toggle-btn btn btn-xs btn-default" style="display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border-radius: 6px;" title="${__('Toggle Theme')}">
