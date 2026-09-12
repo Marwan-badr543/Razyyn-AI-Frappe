@@ -1077,8 +1077,8 @@ class ChatUIManager {
 			
 			// Defensive formatting cleanup
 			let cleanCode = code.trim();
-			cleanCode = cleanCode.replace(/,\s*([\]}])/g, '$1'); // Clean trailing commas
-			cleanCode = cleanCode.replace(/^```json\s*/i, '').replace(/```$/, '');
+			cleanCode = cleanCode.replace(new RegExp(',[ \\t\\r\\n]*([\\]}])', 'g'), '$1'); // Clean trailing commas
+			cleanCode = cleanCode.replace(new RegExp('^```json[ \\t\\r\\n]*', 'i'), '').replace(/```$/, '');
 
 			$this.attr('data-processed', 'true');
 
@@ -1310,8 +1310,8 @@ class ChatUIManager {
 		temp_output = temp_output.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
 		
 		// Parse Mermaid diagrams first
-		temp_output = temp_output.replace(/```mermaid\s*(?:<br>)?([\s\S]*?)(?:<br>)?```/gi, function(match, code) {
-			let raw_code = code.replace(/<br\s*\/?>/gi, '\n');
+		temp_output = temp_output.replace(new RegExp('```mermaid[ \\t\\r\\n]*(?:<br>)?([\\s\\S]*?)(?:<br>)?```', 'gi'), function(match, code) {
+			let raw_code = code.replace(new RegExp('<br[ \\t\\r\\n]*/?>', 'gi'), '\n');
 			raw_code = raw_code
 				.replace(/&amp;/g, '&')
 				.replace(/&lt;/g, '<')
@@ -1322,8 +1322,8 @@ class ChatUIManager {
 		});
 
 		// Parse Chart.js diagrams
-		temp_output = temp_output.replace(/```chartjs\s*(?:<br>)?([\s\S]*?)(?:<br>)?```/gi, function(match, code) {
-			let raw_code = code.replace(/<br\s*\/?>/gi, '\n');
+		temp_output = temp_output.replace(new RegExp('```chartjs[ \\t\\r\\n]*(?:<br>)?([\\s\\S]*?)(?:<br>)?```', 'gi'), function(match, code) {
+			let raw_code = code.replace(new RegExp('<br[ \\t\\r\\n]*/?>', 'gi'), '\n');
 			raw_code = raw_code
 				.replace(/&amp;/g, '&')
 				.replace(/&lt;/g, '<')
@@ -1365,7 +1365,7 @@ class ChatUIManager {
 				rows.each(function() {
 					$(this).find('td').each(function(i) {
 						let text = $(this).text().trim().replace(/[\$,€,£,¥]/g, '').trim();
-						if (text && !/^-?[\d,\.\s%]+$/.test(text)) {
+						if (text && !/^-?[0-9,\. \t\r\n%]+$/.test(text)) {
 							is_numeric_col[i] = false;
 						}
 					});
