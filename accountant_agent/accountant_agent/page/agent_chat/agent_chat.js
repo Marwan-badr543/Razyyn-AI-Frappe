@@ -688,7 +688,12 @@ class AccountantAgentChat {
 					</div>
 
 					<!-- Messages Container -->
-					<div class="agent-messages-container" id="agent-msg-box"></div>
+					<div class="agent-messages-wrapper" style="position: relative; flex: 1; min-height: 0; display: flex;">
+						<div class="agent-messages-container" id="agent-msg-box"></div>
+						<button type="button" class="agent-scroll-to-bottom-btn" id="agent-scroll-to-bottom">
+							<i class="fa fa-arrow-down"></i> ${__('New messages')}
+						</button>
+					</div>
 
 					<!-- Input Area -->
 					<div class="agent-input-container">
@@ -740,6 +745,10 @@ class AccountantAgentChat {
 
 		this.sidebar.find('.new-chat-btn').on('click', () => {
 			this.session_manager.set_new_chat_draft();
+		});
+
+		this.layout.find('#agent-scroll-to-bottom').on('click', () => {
+			this.ui_manager.jump_to_bottom(this.msg_box);
 		});
 
 		this.layout.find('.agent-settings-btn').on('click', () => {

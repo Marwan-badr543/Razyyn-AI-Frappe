@@ -182,6 +182,12 @@ class ChatMessageHandler {
 				message !== "Approve" &&
 				(!message.startsWith || !message.startsWith("Clarification Response:"))
 			) {
+				// Sending is the one action that should always jump to the
+				// bottom, even if the user had scrolled up to reread
+				// something — they just acted, so the newest message
+				// (theirs, then the reply) is what they want to see next.
+				this.chat.ui_manager.user_pinned_to_bottom = true;
+				this.chat.ui_manager._toggle_scroll_to_bottom_btn(false);
 				this.chat.ui_manager.append_message(
 					this.chat.msg_box,
 					"user",

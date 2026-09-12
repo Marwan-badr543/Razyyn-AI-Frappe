@@ -248,6 +248,8 @@ class ChatSessionManager {
 
 	async load_chat_history() {
 		this.chat.ui_manager.clear_typing_timers();
+		this.chat.ui_manager.user_pinned_to_bottom = true;
+		this.chat.ui_manager._toggle_scroll_to_bottom_btn(false);
 		this.chat.msg_box.empty();
 		if (!this.session_id || this.is_new_chat_draft) {
 			this.chat.ui_manager.render_welcome(this.chat.msg_box);

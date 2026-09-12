@@ -9,6 +9,12 @@ class ChatUIManager {
 	constructor(chat_instance) {
 		this.chat = chat_instance;
 		this.typing_timers = [];
+		//: Whether the user's own scroll position is (still) at the bottom of
+		//: the thread. Set from a real 'scroll' event, not re-guessed on every
+		//: stream update — see `_ensure_scroll_tracking` for why a proximity
+		//: check alone let auto-scroll fight a user trying to read upward
+		//: while a reply is still coming in.
+		this.user_pinned_to_bottom = true;
 	}
 
 	clear_typing_timers() {
@@ -20,6 +26,8 @@ class ChatUIManager {
 
 	render_welcome(msg_box) {
 		msg_box.empty();
+		this.user_pinned_to_bottom = true;
+		this._toggle_scroll_to_bottom_btn(false);
 		let welcome_html = `
 			<div class="agent-welcome-state">
 				<div class="agent-welcome-icon">
@@ -1183,18 +1191,59 @@ class ChatUIManager {
 		return dom_el.scrollHeight - dom_el.scrollTop - dom_el.clientHeight <= threshold;
 	}
 
+	//: Binds a real 'scroll' listener the first time this msg_box is seen
+	//: (guarded by a data flag, so every call site can call this freely).
+	//:
+	//: WHY A PROXIMITY CHECK ALONE WAS NOT ENOUGH
+	//:     `scroll_to_bottom`/`force_scroll_to_bottom` used to decide whether
+	//:     to snap down by re-measuring `is_near_bottom` at the moment each
+	//:     stream chunk arrived — which is nearly every 30ms while a reply is
+	//:     typing out. A user scrolling up mid-reply is still, for most of
+	//:     that gesture, within the old 60-100px threshold, so the very next
+	//:     chunk read them as "still near the bottom" and snapped the view
+	//:     back before their scroll had a chance to carry them further —
+	//:     reported live as "it doesn't let me scroll while it's answering".
+	//:     A real 'scroll' event, tracked once and trusted until the NEXT
+	//:     real scroll event, does not get re-decided by unrelated content
+	//:     changes: once the user's own gesture has taken them away from the
+	//:     bottom, auto-follow stays off until they scroll back themselves or
+	//:     press "New messages" — regardless of how many chunks arrive
+	//:     between now and then.
+	_ensure_scroll_tracking(msg_box) {
+		if (!msg_box || !msg_box.length || msg_box.data("razyynScrollTrackingBound")) return;
+		msg_box.data("razyynScrollTrackingBound", true);
+		msg_box.on("scroll", () => {
+			this.user_pinned_to_bottom = this.is_near_bottom(msg_box, 20);
+			this._toggle_scroll_to_bottom_btn(!this.user_pinned_to_bottom);
+		});
+	}
+
+	_toggle_scroll_to_bottom_btn(show) {
+		let btn = this.chat && this.chat.layout && this.chat.layout.find("#agent-scroll-to-bottom");
+		if (btn && btn.length) btn.toggleClass("visible", !!show);
+	}
+
 	scroll_to_bottom(msg_box) {
 		if (!msg_box || !msg_box[0]) return;
-		let el = msg_box[0];
-		let is_at_bottom = this.is_near_bottom(msg_box, 100);
-		if (is_at_bottom) {
-			msg_box.scrollTop(el.scrollHeight);
-		}
+		this._ensure_scroll_tracking(msg_box);
+		if (this.user_pinned_to_bottom === false) return;
+		msg_box.scrollTop(msg_box[0].scrollHeight);
 	}
 
 	force_scroll_to_bottom(msg_box) {
 		if (!msg_box || !msg_box[0]) return;
+		this._ensure_scroll_tracking(msg_box);
+		if (this.user_pinned_to_bottom === false) return;
 		msg_box.scrollTop(msg_box[0].scrollHeight);
+	}
+
+	//: The "New messages" button's own handler, and the only other way (with
+	//: scrolling to the bottom by hand) that auto-follow turns back on.
+	jump_to_bottom(msg_box) {
+		if (!msg_box || !msg_box[0]) return;
+		msg_box.scrollTop(msg_box[0].scrollHeight);
+		this.user_pinned_to_bottom = true;
+		this._toggle_scroll_to_bottom_btn(false);
 	}
 
 	render_mermaid_diagrams(container) {
