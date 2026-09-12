@@ -229,28 +229,40 @@ class ChatMessageHandler {
 	// edit-and-resubmit -- only the RPC method/params differ, so both call
 	// this instead of keeping two copies of the same ~100 lines.
 	async _dispatch_to_agent(active_session_id, xcall_method, xcall_params) {
-		// Initialize the stream bubble immediately with "Thinking..." status
-		let stream_id = `stream-${this.chat.generate_uuid()}`;
-		this.chat.active_streams = this.chat.active_streams || {};
-		this.chat.active_streams[active_session_id] = {
-			bubble_id: stream_id,
-			accumulated: "",
-			reasoning: "",
-			steps: [{ name: __("Thinking..."), type: "node" }],
-			status: __("Thinking..."),
-			start_time: Date.now(),
-			elapsed_seconds: 0,
-		};
-		this.chat.start_stream_timer(active_session_id);
+		// Only touch the stream bubble / composer when the chat still open on
+		// screen is the one this turn belongs to. `send_chat_message` awaits a
+		// draft-creation RPC before reaching here, and the customer can switch
+		// chats during that wait -- bootstrapping a bubble unconditionally would
+		// then draw "Thinking..." into whatever OTHER chat they switched to and
+		// lock its composer to "cancel". `processing_sessions` is the only
+		// state that must survive a switch away, so it stays unguarded.
+		if (this.chat.session_manager.session_id === active_session_id) {
+			let stream_id = `stream-${this.chat.generate_uuid()}`;
+			this.chat.active_streams = this.chat.active_streams || {};
+			this.chat.active_streams[active_session_id] = {
+				bubble_id: stream_id,
+				accumulated: "",
+				reasoning: "",
+				steps: [{ name: __("Thinking..."), type: "node" }],
+				status: __("Thinking..."),
+				start_time: Date.now(),
+				elapsed_seconds: 0,
+			};
+			this.chat.start_stream_timer(active_session_id);
 
-		this.chat.ui_manager.create_stream_bubble(this.chat.msg_box, stream_id, active_session_id);
-		this.chat.ui_manager.update_stream_status(
-			this.chat.msg_box,
-			stream_id,
-			__("Thinking..."),
-			[{ name: __("Thinking..."), type: "node" }]
-		);
-		this.set_button_state("cancel");
+			this.chat.ui_manager.create_stream_bubble(
+				this.chat.msg_box,
+				stream_id,
+				active_session_id
+			);
+			this.chat.ui_manager.update_stream_status(
+				this.chat.msg_box,
+				stream_id,
+				__("Thinking..."),
+				[{ name: __("Thinking..."), type: "node" }]
+			);
+			this.set_button_state("cancel");
+		}
 
 		this.processing_sessions.add(active_session_id);
 
@@ -401,17 +413,22 @@ class ChatMessageHandler {
 		let echoed_row = this.chat.msg_box.find(".agent-msg-row").last();
 
 		let agent_email = localStorage.getItem("connected_agent_email");
+		// `title` only added when truthy: an xcall param serializes a JS `null`
+		// unpredictably (None, "", or the literal string "null" depending on
+		// the transport), and edit_message()'s `if title:` guard on the Python
+		// side would then rename every non-opening-message edit to "null".
+		let edit_params = {
+			session_id: session_id,
+			message_name: message_id,
+			message: sanitised_message,
+			agent_email: agent_email,
+			agent_type: "auto",
+		};
+		if (title) edit_params.title = title;
 		let res = await this._dispatch_to_agent(
 			session_id,
 			"accountant_agent.accountant_agent.page.agent_chat.agent_chat.edit_message",
-			{
-				session_id: session_id,
-				message_name: message_id,
-				message: sanitised_message,
-				agent_email: agent_email,
-				agent_type: "auto",
-				title: title,
-			}
+			edit_params
 		);
 
 		if (res && res.message_name) {

@@ -1184,8 +1184,11 @@ def process_agent_message_background(
 	# starts clean instead of carrying the discarded turns forward, while our
 	# session_id -- and everything keyed on it, above and below this line --
 	# never changes.
-	chat_doc = frappe.get_doc("Agent Chats", session_id)
-	backend_session_id = chat_doc.get_backend_session_id()
+	# A plain value lookup, not get_doc(): the chat can be deleted by the
+	# customer while this worker is mid-turn, and an uncaught DoesNotExistError
+	# here (outside every try below) would kill the worker silently -- no
+	# agent_message_error published, the client's bubble spins forever.
+	backend_session_id = frappe.db.get_value("Agent Chats", session_id, "backend_session_id") or session_id
 
 	payload_data = {
 		"message": message,
@@ -1805,7 +1808,7 @@ def edit_message(
 		frappe.throw(_("Message not found in this chat."), frappe.DoesNotExistError)
 	if row.sender != "human":
 		frappe.throw(_("Only your own messages can be edited."), frappe.ValidationError)
-	if row.content == "Approve" or row.content.startswith("Clarification Response:"):
+	if row.content == "Approve" or (row.content or "").startswith("Clarification Response:"):
 		frappe.throw(_("This message can't be edited."), frappe.ValidationError)
 
 	if not get_agent_settings_doc(agent_email):
