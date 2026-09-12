@@ -1,5 +1,5 @@
 {
-	"agent_server_url": "https://api.razyyn.com",
+	"agent_server_url": "http://127.0.01:8010",
 	"ocr_languages": "eng+ara",
 	"max_upload_files": 20
 }
