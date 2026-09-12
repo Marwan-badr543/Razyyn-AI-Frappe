@@ -702,6 +702,51 @@
 	padding: 10px 14px;
 	font-size: var(--font-size-sm);
 	box-shadow: none;
+	position: relative;
+}
+
+/* Edit control on the customer's own messages: same hover-reveal, same
+   icon-button chrome as the sidebar's rename/delete row (.chat-action-btn) --
+   one hover-actions idiom for the whole app, not a second one invented here. */
+.agent-msg-actions {
+	display: none;
+	justify-content: flex-end;
+	margin-top: 6px;
+}
+
+.agent-msg-row.user:hover .agent-msg-actions,
+.agent-msg-row.human:hover .agent-msg-actions {
+	display: flex;
+}
+
+.agent-msg-row.editing .agent-msg-actions {
+	display: none;
+}
+
+.agent-msg-edit-box {
+	margin-top: 4px;
+}
+
+.agent-msg-edit-textarea {
+	width: 100%;
+	min-height: 44px;
+	resize: none;
+	overflow: hidden;
+	background-color: var(--bg-color);
+	color: var(--text-primary);
+	border: 1px solid var(--chat-primary);
+	border-radius: 8px;
+	padding: 8px 10px;
+	font-size: var(--font-size-sm);
+	font-family: inherit;
+	line-height: var(--line-height-body);
+}
+
+.agent-msg-edit-controls {
+	display: flex;
+	justify-content: flex-end;
+	gap: 6px;
+	margin-top: 6px;
 }
 
 /* Agent Bubble: Full-width, clean typographic display without container bubbles */

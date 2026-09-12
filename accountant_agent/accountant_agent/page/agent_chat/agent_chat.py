@@ -106,9 +106,7 @@ def get_agent_settings_doc(email: str) -> Document | None:
 	if not email:
 		return None
 
-	record = frappe.db.get_value(
-		"Agent Settings", {"email": email}, ["name", "owner"], as_dict=True
-	)
+	record = frappe.db.get_value("Agent Settings", {"email": email}, ["name", "owner"], as_dict=True)
 	if not record:
 		return None
 	if record.owner != frappe.session.user and frappe.session.user != "Administrator":
@@ -128,8 +126,10 @@ def assert_agent_account_is_connectable(email: str) -> None:
 	owner = frappe.db.get_value("Agent Settings", {"email": email}, "owner")
 	if owner and owner != frappe.session.user and frappe.session.user != "Administrator":
 		frappe.throw(
-			_("The agent account {0} is already connected to a different ERPNext user. "
-			  "Ask a System Manager to remove that connection first.").format(email),
+			_(
+				"The agent account {0} is already connected to a different ERPNext user. "
+				"Ask a System Manager to remove that connection first."
+			).format(email),
 			frappe.PermissionError,
 		)
 
@@ -154,6 +154,7 @@ def assert_owns_session(session_id: str) -> None:
 
 # ---------------- Server Communication Helpers ----------------
 
+
 def register_agent_on_server(email: str, password: str, company_name: str, api_key: str) -> None:
 	"""Sends a user registration POST request to the remote agent server."""
 	payload = {
@@ -161,11 +162,12 @@ def register_agent_on_server(email: str, password: str, company_name: str, api_k
 		"name": company_name,
 		"username": email,
 		"password": password,
-		"company_url": frappe.utils.get_url()
+		"company_url": frappe.utils.get_url(),
 	}
 	try:
 		response = requests.post(
-			f"{get_agent_server_url()}/users/", json=payload,
+			f"{get_agent_server_url()}/users/",
+			json=payload,
 			timeout=AGENT_REGISTER_TIMEOUT,
 		)
 		if response.status_code != 201:
@@ -185,13 +187,11 @@ def login_agent_on_server(email: str, password: str) -> tuple:
 	token — presenting an expired access token no longer renews anything, which
 	is what stopped a leaked token from lasting forever.
 	"""
-	login_payload = {
-		"username": email,
-		"password": password
-	}
+	login_payload = {"username": email, "password": password}
 	try:
 		response = requests.post(
-			f"{get_agent_server_url()}/auth/login", json=login_payload,
+			f"{get_agent_server_url()}/auth/login",
+			json=login_payload,
 			timeout=AGENT_LOGIN_TIMEOUT,
 		)
 		if response.status_code != 200:
@@ -250,9 +250,7 @@ def _stored_secret(settings_name: str, fieldname: str) -> str | None:
 	reads the secret store itself, so the value is always the current one.
 	"""
 	try:
-		return get_decrypted_password(
-			"Agent Settings", settings_name, fieldname, raise_exception=False
-		)
+		return get_decrypted_password("Agent Settings", settings_name, fieldname, raise_exception=False)
 	except Exception:
 		return None
 
@@ -266,7 +264,7 @@ def _token_seconds_left(token: str | None) -> float:
 	if not token:
 		return 0.0
 	expires_at = decode_jwt_payload(token).get("exp")
-	if not isinstance(expires_at, (int, float)):
+	if not isinstance(expires_at, int | float):
 		return 0.0
 	return max(0.0, float(expires_at) - time.time())
 
@@ -398,7 +396,9 @@ def _usable(token: str | None, refused: str | None) -> bool:
 
 
 def _renew_access_token(
-	settings_name: str, email: str, refused: str | None = None,
+	settings_name: str,
+	email: str,
+	refused: str | None = None,
 ) -> tuple:
 	"""Renew once, site-wide, however many workers ask at the same moment.
 
@@ -467,7 +467,10 @@ def token_verdict(agent_email: str, refused: str | None = None) -> tuple:
 
 
 def get_agent_access_token(
-	agent_email: str, *, force_renew: bool = False, refused: str | None = None,
+	agent_email: str,
+	*,
+	force_renew: bool = False,
+	refused: str | None = None,
 ) -> str | None:
 	"""A token that is live now, or None. The only supported way to get one.
 
@@ -486,7 +489,8 @@ def _stored_secret_for(email: str, fieldname: str) -> str | None:
 
 
 def refresh_agent_token_on_server(
-	email: str, refused: str | None = None,
+	email: str,
+	refused: str | None = None,
 ) -> str | None:
 	"""Renew this account's access token, whatever else the site is doing.
 
@@ -494,7 +498,6 @@ def refresh_agent_token_on_server(
 	by `token_verdict`, which is where renewal is serialised.
 	"""
 	return get_agent_access_token(email, force_renew=True, refused=refused)
-
 
 
 # ---------------- Talking to the platform ----------------
@@ -528,9 +531,7 @@ def call_the_platform(agent_email: str, send):
 	if verdict == REFUSED:
 		raise SessionEnded(_("Your session has ended. Please sign in again."))
 	if not token:
-		raise PlatformUnreachable(
-			_("Razyyn could not be reached just now. Please try again.")
-		)
+		raise PlatformUnreachable(_("Razyyn could not be reached just now. Please try again."))
 
 	response = send({"Authorization": f"Bearer {token}"})
 	if response.status_code != 401:
@@ -550,11 +551,11 @@ def call_the_platform(agent_email: str, send):
 	# UNREACHABLE. The session is almost certainly fine — we simply could not
 	# renew. Erasing the credentials here is what used to turn a restart of the
 	# agent service into a sign-in prompt for every customer on the site.
-	raise PlatformUnreachable(
-		_("Razyyn could not be reached just now. Please try again.")
-	)
+	raise PlatformUnreachable(_("Razyyn could not be reached just now. Please try again."))
+
 
 # ---------------- Database Connection Helpers ----------------
+
 
 def _erase_secret(settings_name: str, fieldname: str) -> None:
 	"""Actually remove one encrypted field's value.
@@ -618,20 +619,23 @@ def save_agent_settings(
 			doc.save(ignore_permissions=True)
 
 			for fieldname, value in (
-				("access_token", access_token), ("refresh_token", refresh_token),
+				("access_token", access_token),
+				("refresh_token", refresh_token),
 			):
 				if value == "":
 					_erase_secret(doc.name, fieldname)
 		else:
 			if not api_key:
 				frappe.throw(_("An API key is required to create a new connection."))
-			frappe.get_doc({
-				"doctype": "Agent Settings",
-				"email": email,
-				"api_key": api_key,
-				"access_token": access_token or "",
-				"refresh_token": refresh_token or "",
-			}).insert(ignore_permissions=True)
+			frappe.get_doc(
+				{
+					"doctype": "Agent Settings",
+					"email": email,
+					"api_key": api_key,
+					"access_token": access_token or "",
+					"refresh_token": refresh_token or "",
+				}
+			).insert(ignore_permissions=True)
 		frappe.db.commit()
 
 		if doc:
@@ -684,49 +688,59 @@ def deprecate_previous_plans(session_id: str) -> None:
 							"Agent Chat History",
 							msg.name,
 							"content",
-							json.dumps(plan_data, ensure_ascii=False)
+							json.dumps(plan_data, ensure_ascii=False),
 						)
 				except Exception as json_err:
-					frappe.log_error(title="Accountant Agent Deprecate Plan", message=f"Error deprecating plan message {msg.name}: {json_err!s}")
+					frappe.log_error(
+						title="Accountant Agent Deprecate Plan",
+						message=f"Error deprecating plan message {msg.name}: {json_err!s}",
+					)
 		frappe.db.commit()
 	except Exception as e:
-		frappe.log_error(title="Accountant Agent Deprecate Plan", message=f"Error in deprecate_previous_plans: {e!s}")
+		frappe.log_error(
+			title="Accountant Agent Deprecate Plan", message=f"Error in deprecate_previous_plans: {e!s}"
+		)
 
 
-def save_chat_history(session_id: str, sender: str, content: str) -> None:
-	"""Saves a message in the Agent Chat History."""
+def save_chat_history(session_id: str, sender: str, content: str) -> str | None:
+	"""Saves a message in the Agent Chat History. Returns its name, or None on failure."""
 	try:
 		# If the new message is a plan, deprecate all previous plans in this session
 		if content and content.strip().startswith('{"type": "plan"'):
 			deprecate_previous_plans(session_id)
 
-		doc = frappe.get_doc({
-			"doctype": "Agent Chat History",
-			"creation1": frappe.utils.now_datetime(),
-			"session_id": session_id,
-			"sender": sender,
-			"content": content
-		})
+		doc = frappe.get_doc(
+			{
+				"doctype": "Agent Chat History",
+				"creation1": frappe.utils.now_datetime(),
+				"session_id": session_id,
+				"sender": sender,
+				"content": content,
+			}
+		)
 		doc.insert(ignore_permissions=True)
 		frappe.db.commit()
+		return doc.name
 	except Exception as e:
-		frappe.log_error(title="Accountant Agent Chat", message=f"Error saving user message to history: {e!s}")
+		frappe.log_error(
+			title="Accountant Agent Chat", message=f"Error saving user message to history: {e!s}"
+		)
+		return None
 
 
 def save_chat_event_if_not_duplicate(session_id: str, sender: str, content: str) -> None:
 	"""Saves an event/error message in the Agent Chat History, preventing duplicates."""
 	try:
 		latest_content = frappe.db.get_value(
-			"Agent Chat History",
-			{"session_id": session_id},
-			"content",
-			order_by="creation desc"
+			"Agent Chat History", {"session_id": session_id}, "content", order_by="creation desc"
 		)
 		if latest_content == content:
 			return
 		save_chat_history(session_id, sender, content)
 	except Exception as e:
-		frappe.log_error(title="Accountant Agent Chat Event", message=f"Error checking/saving chat event: {e!s}")
+		frappe.log_error(
+			title="Accountant Agent Chat Event", message=f"Error checking/saving chat event: {e!s}"
+		)
 
 
 def build_history_payload(session_id: str) -> str:
@@ -767,7 +781,8 @@ def build_history_payload(session_id: str) -> str:
 		for row in reversed(recent)
 	]
 	return json.dumps(
-		[turn for turn in transcript if turn["content"]], ensure_ascii=False,
+		[turn for turn in transcript if turn["content"]],
+		ensure_ascii=False,
 	)
 
 
@@ -790,7 +805,8 @@ _QUESTION_PAYLOAD = re.compile(r'data-questions="([A-Za-z0-9+/=]+)"')
 #: history and the "has this been answered?" test. The class is the same
 #: string in every language.
 _ANSWERED = re.compile(
-	r'<span[^>]*class="agent-answer"[^>]*>(.*?)</span>', re.IGNORECASE | re.DOTALL,
+	r'<span[^>]*class="agent-answer"[^>]*>(.*?)</span>',
+	re.IGNORECASE | re.DOTALL,
 )
 
 #: The wrapper that carries it. What this marks is the whole line, so the
@@ -901,10 +917,7 @@ def _prose_only(content: str) -> str:
 		except (ValueError, TypeError):
 			payload = None
 		if isinstance(payload, dict):
-			spoken = (
-				payload.get("plan") or payload.get("question")
-				or payload.get("response") or ""
-			)
+			spoken = payload.get("plan") or payload.get("question") or payload.get("response") or ""
 			text = str(spoken).strip() or text
 	# AFTER THE JSON, NEVER BEFORE IT. The chat page stores what a person typed
 	# HTML-escaped, so `don't` is on disk as `don&#x27;t` and reached the model
@@ -923,6 +936,7 @@ def update_chat_timestamp(session_id: str) -> None:
 
 
 # ---------------- Whitelisted Page Methods ----------------
+
 
 @frappe.whitelist()
 def get_connection_status(agent_email: str | None = None) -> dict:
@@ -998,11 +1012,7 @@ def authenticate_agent(mode: str, email: str, password: str, company_name: str |
 
 	# Retrieve the API key to return to client
 	doc = get_agent_settings_doc(email)
-	return {
-		"success": True,
-		"email": email,
-		"api_key": doc.get_password("api_key")
-	}
+	return {"success": True, "email": email, "api_key": doc.get_password("api_key")}
 
 
 def get_latest_plan_message(session_id: str, lock: bool = False):
@@ -1012,7 +1022,7 @@ def get_latest_plan_message(session_id: str, lock: bool = False):
 		filters={"session_id": session_id},
 		fields=["name", "content"],
 		order_by="creation desc",
-		limit=20
+		limit=20,
 	)
 	for msg in messages:
 		if msg.content and msg.content.startswith('{"type": "plan"'):
@@ -1020,13 +1030,14 @@ def get_latest_plan_message(session_id: str, lock: bool = False):
 				try:
 					# Apply row-level lock using FOR UPDATE with appropriate error handling
 					frappe.db.sql(
-						"select name from `tabAgent Chat History` where name=%s for update",
-						msg.name
+						"select name from `tabAgent Chat History` where name=%s for update", msg.name
 					)
 					# Return fresh doc after lock is acquired
 					return frappe.get_doc("Agent Chat History", msg.name)
 				except Exception as e:
-					frappe.log_error(title="Accountant Agent Plan Lock", message=f"Database lock timeout or error: {e!s}")
+					frappe.log_error(
+						title="Accountant Agent Plan Lock", message=f"Database lock timeout or error: {e!s}"
+					)
 					frappe.throw(_("Could not acquire lock on the plan record. Please try again."))
 			return msg
 	return None
@@ -1075,7 +1086,9 @@ def send_message(
 				latest_plan.save(ignore_permissions=True)
 				frappe.db.commit()
 		except Exception as e:
-			frappe.log_error(title="Accountant Agent Plan Status Update", message=f"Error updating plan status JSON: {e!s}")
+			frappe.log_error(
+				title="Accountant Agent Plan Status Update", message=f"Error updating plan status JSON: {e!s}"
+			)
 
 	# THE CUSTOMER'S OWN WORDS ALWAYS GO INTO THEIR TRANSCRIPT.
 	#
@@ -1088,6 +1101,11 @@ def send_message(
 	# What is stored is the ANSWER, not the envelope: the reply arrives with the
 	# agent's full question wrapped around it, and echoing that back at the
 	# customer at full length is why it was being skipped in the first place.
+	# The id of the row just written for this turn, if any -- "Approve" and a
+	# folded clarification answer are not freestanding, editable messages, so
+	# neither leaves one for the client to attach an edit control to.
+	message_name = None
+
 	if message == "Approve":
 		pass
 	elif message.startswith("Clarification Response:"):
@@ -1107,7 +1125,7 @@ def send_message(
 				save_chat_history(session_id, "human", said)
 			update_chat_timestamp(session_id)
 	else:
-		save_chat_history(session_id, "human", message)
+		message_name = save_chat_history(session_id, "human", message)
 		update_chat_timestamp(session_id)
 
 	# A new turn is not the cancelled one. Cleared here, in the request that
@@ -1128,7 +1146,7 @@ def send_message(
 		scan=_asked_for(scan),
 	)
 
-	return {"status": "queued", "session_id": session_id}
+	return {"status": "queued", "session_id": session_id, "message_name": message_name}
 
 
 def process_agent_message_background(
@@ -1160,11 +1178,20 @@ def process_agent_message_background(
 
 	history_json = build_history_payload(session_id)
 
+	# The Razyyn thread id for this turn. Ordinarily the same string as our own
+	# session_id; editing a message (see edit_message()) rotates this to a
+	# fresh value on the Agent Chats doc so the desk's own conversation state
+	# starts clean instead of carrying the discarded turns forward, while our
+	# session_id -- and everything keyed on it, above and below this line --
+	# never changes.
+	chat_doc = frappe.get_doc("Agent Chats", session_id)
+	backend_session_id = chat_doc.get_backend_session_id()
+
 	payload_data = {
 		"message": message,
 		"history": history_json,
 		"custom_instructions": custom_instructions,
-		"session_id": session_id or "",
+		"session_id": backend_session_id or "",
 		"erp_system": "ERPNext",
 		"stream": "true",
 		"selected_agent": agent_type or "auto",
@@ -1180,7 +1207,9 @@ def process_agent_message_background(
 			read_the_attachments(file_urls, frappe.session.user, session_id, user)
 
 		files_list, opened_files = build_upload_parts(
-			file_urls, frappe.session.user, scan=scan,
+			file_urls,
+			frappe.session.user,
+			scan=scan,
 		)
 
 		# The last moment at which stopping is free. Past this the request is
@@ -1250,7 +1279,11 @@ def process_agent_message_background(
 				except Exception:
 					data_json = {"text": data_str}
 
-				if isinstance(data_json, dict) and "data" in data_json and isinstance(data_json["data"], dict):
+				if (
+					isinstance(data_json, dict)
+					and "data" in data_json
+					and isinstance(data_json["data"], dict)
+				):
 					unwrapped = dict(data_json["data"])
 					for k, v in data_json.items():
 						if k != "data" and k not in unwrapped:
@@ -1393,7 +1426,11 @@ def process_agent_message_background(
 
 					frappe.publish_realtime(
 						event="agent_message_done",
-						message={"session_id": session_id, "response": spoken, "agent": data_json.get("agent", "")},
+						message={
+							"session_id": session_id,
+							"response": spoken,
+							"agent": data_json.get("agent", ""),
+						},
 						user=user,
 					)
 
@@ -1431,10 +1468,7 @@ def process_agent_message_background(
 					# and only becomes the turn's answer if the stream ends
 					# without one.
 					last_error = (
-						data_json.get("detail")
-						or data_json.get("message")
-						or data_json.get("error")
-						or ""
+						data_json.get("detail") or data_json.get("message") or data_json.get("error") or ""
 					)
 					if last_error:
 						frappe.log_error(
@@ -1593,9 +1627,7 @@ def _collapsible_question(spoken: str, questions: list, answer: str = "") -> str
 	if not asked:
 		return spoken
 
-	packed = b64encode(
-		json.dumps(questions, ensure_ascii=False).encode("utf-8")
-	).decode("ascii")
+	packed = b64encode(json.dumps(questions, ensure_ascii=False).encode("utf-8")).decode("ascii")
 
 	headline = asked[0]
 	if len(asked) > 1:
@@ -1673,7 +1705,9 @@ def fold_the_answer_in(session_id: str, answer: str) -> bool:
 			return False
 
 		frappe.db.set_value(
-			"Agent Chat History", row.name, "content",
+			"Agent Chat History",
+			row.name,
+			"content",
 			_collapsible_question(
 				str(questions[0].get("question") or "") if questions else content,
 				questions,
@@ -1732,7 +1766,85 @@ def _answer_text(message: str) -> str:
 	return "\n".join(answers)
 
 
+@frappe.whitelist()
+def edit_message(
+	session_id: str,
+	message_name: str,
+	message: str,
+	agent_email: str,
+	agent_type: str = "auto",
+	file_urls: list[str] | str | None = None,
+	scan: bool | str = False,
+	title: str | None = None,
+) -> dict:
+	"""Edit a previously sent message of your own and regenerate from there.
 
+	Like ChatGPT/Claude's edit-and-resubmit: everything the customer or the
+	agent said after the edited turn is discarded from this chat's own
+	transcript, and the edited turn is re-sent as a brand new message. The
+	Razyyn agent itself gets a fresh thread (`AgentChats.get_backend_session_id`)
+	so its own conversation state does not carry the discarded turns forward
+	either -- while this chat's identity (`session_id`, its remaining history,
+	its place in the sidebar) never changes.
+	"""
+	_assert_signed_in()
+	assert_owns_session(session_id)
+
+	if not message_name:
+		frappe.throw(_("Message ID is required."), frappe.ValidationError)
+	if not (message or "").strip():
+		frappe.throw(_("Message cannot be empty."), frappe.ValidationError)
+
+	row = frappe.db.get_value(
+		"Agent Chat History",
+		message_name,
+		["session_id", "sender", "content", "creation"],
+		as_dict=True,
+	)
+	if not row or row.session_id != session_id:
+		frappe.throw(_("Message not found in this chat."), frappe.DoesNotExistError)
+	if row.sender != "human":
+		frappe.throw(_("Only your own messages can be edited."), frappe.ValidationError)
+	if row.content == "Approve" or row.content.startswith("Clarification Response:"):
+		frappe.throw(_("This message can't be edited."), frappe.ValidationError)
+
+	if not get_agent_settings_doc(agent_email):
+		frappe.throw(_("Not authenticated with Razyyn."))
+
+	# Stop first: a run still answering the discarded branch must not race the
+	# fresh one for the same chat.
+	try:
+		cancel_agent(session_id=session_id, agent_email=agent_email)
+	except Exception:
+		pass  # Nothing in flight is the common case, not a failure.
+
+	# The edited turn is re-sent below as a brand new row, so drop it here too
+	# rather than rewrite it in place -- one code path for "what a message
+	# looks like once sent" instead of two.
+	frappe.db.delete(
+		"Agent Chat History",
+		{"session_id": session_id, "creation": [">=", row.creation]},
+	)
+
+	chat_doc = frappe.get_doc("Agent Chats", session_id)
+	# A fresh thread for the agent: its own state must not carry the discarded
+	# turns forward. Minted here, once, rather than inside send_message/
+	# process_agent_message_background, so a plain (non-edit) message never
+	# pays for a doc write it doesn't need.
+	chat_doc.backend_session_id = str(uuid.uuid4())
+	if title:
+		chat_doc.title = title
+	chat_doc.save(ignore_permissions=True)
+	frappe.db.commit()
+
+	return send_message(
+		message=message,
+		session_id=session_id,
+		agent_email=agent_email,
+		agent_type=agent_type,
+		file_urls=file_urls,
+		scan=scan,
+	)
 
 
 @frappe.whitelist()
@@ -1749,13 +1861,16 @@ def cancel_agent(session_id: str, agent_email: str) -> dict:
 	# server yet — see `remember_the_cancellation`.
 	remember_the_cancellation(session_id)
 
-	payload = {"session_id": session_id}
+	backend_session_id = frappe.get_doc("Agent Chats", session_id).get_backend_session_id()
+	payload = {"session_id": backend_session_id}
 
 	def send(headers):
 		headers["Content-Type"] = "application/json"
 		return requests.post(
 			f"{get_agent_server_url()}/agent/cancel",
-			json=payload, headers=headers, timeout=AGENT_CANCEL_TIMEOUT,
+			json=payload,
+			headers=headers,
+			timeout=AGENT_CANCEL_TIMEOUT,
 		)
 
 	try:
@@ -1793,10 +1908,12 @@ def get_run_state(session_id: str, agent_email: str) -> dict:
 	if not doc:
 		return {"status": "none", "tasks": []}
 
+	backend_session_id = frappe.get_doc("Agent Chats", session_id).get_backend_session_id()
+
 	def send(headers):
 		return requests.get(
 			f"{get_agent_server_url()}/agent/chat/state",
-			params={"session_id": session_id},
+			params={"session_id": backend_session_id},
 			headers=headers,
 			timeout=AGENT_STATE_TIMEOUT,
 		)
@@ -1901,6 +2018,7 @@ def delete_agent_account(agent_email: str) -> dict:
 
 # ---------------- Chat Session Management Endpoints ----------------
 
+
 @frappe.whitelist()
 def get_chats() -> list[dict]:
 	"""Retrieves all chat sessions owned by the logged-in user."""
@@ -1912,7 +2030,7 @@ def get_chats() -> list[dict]:
 		"Agent Chats",
 		filters={"owner": user},
 		fields=["name", "session_id", "title", "last_update", "creation"],
-		order_by="last_update desc, creation desc"
+		order_by="last_update desc, creation desc",
 	)
 
 
@@ -1925,12 +2043,14 @@ def create_chat(title: str | None = None) -> dict:
 
 	session_id = str(uuid.uuid4())
 
-	doc = frappe.get_doc({
-		"doctype": "Agent Chats",
-		"session_id": session_id,
-		"title": title or _("New Chat"),
-		"last_update": frappe.utils.now_datetime()
-	})
+	doc = frappe.get_doc(
+		{
+			"doctype": "Agent Chats",
+			"session_id": session_id,
+			"title": title or _("New Chat"),
+			"last_update": frappe.utils.now_datetime(),
+		}
+	)
 	doc.insert(ignore_permissions=True)
 	frappe.db.commit()
 
@@ -1938,7 +2058,7 @@ def create_chat(title: str | None = None) -> dict:
 		"name": doc.name,
 		"session_id": doc.session_id,
 		"title": doc.title,
-		"last_update": doc.last_update
+		"last_update": doc.last_update,
 	}
 
 
@@ -1964,7 +2084,7 @@ def update_chat_title(session_id: str, title: str) -> dict:
 		"name": doc.name,
 		"session_id": doc.session_id,
 		"title": doc.title,
-		"last_update": doc.last_update
+		"last_update": doc.last_update,
 	}
 
 
@@ -2008,12 +2128,14 @@ def create_chat_with_id(session_id: str, title: str | None = None) -> dict:
 	except (ValueError, AttributeError, TypeError):
 		frappe.throw(_("Invalid session identifier."), frappe.ValidationError)
 
-	doc = frappe.get_doc({
-		"doctype": "Agent Chats",
-		"session_id": session_id,
-		"title": title or _("New Chat"),
-		"last_update": frappe.utils.now_datetime()
-	})
+	doc = frappe.get_doc(
+		{
+			"doctype": "Agent Chats",
+			"session_id": session_id,
+			"title": title or _("New Chat"),
+			"last_update": frappe.utils.now_datetime(),
+		}
+	)
 	doc.insert(ignore_permissions=True)
 	frappe.db.commit()
 
@@ -2021,11 +2143,12 @@ def create_chat_with_id(session_id: str, title: str | None = None) -> dict:
 		"name": doc.name,
 		"session_id": doc.session_id,
 		"title": doc.title,
-		"last_update": doc.last_update
+		"last_update": doc.last_update,
 	}
 
 
 # ─── Utility Helpers ────────────────────────────────────────────────────────
+
 
 def _asked_for(value) -> bool:
 	"""Whether a switch sent by the browser is on.
@@ -2064,7 +2187,7 @@ AGENT_UPLOAD_DIR: str = "agent_uploads"
 #: audit sweep over a large ledger. Cutting that off at ten minutes does not
 #: protect anything; it destroys work that was progressing normally and gives
 #: the customer a timeout error to explain.
-AGENT_TASK_TIMEOUT_SECONDS: int = 3 * 60 * 60      # 3 hours
+AGENT_TASK_TIMEOUT_SECONDS: int = 3 * 60 * 60  # 3 hours
 
 #: Splitting connect from read is the point.
 #:
@@ -2175,27 +2298,71 @@ MAX_UPLOAD_SIZE_BYTES: int = 100 * 1024 * 1024  # 100 MB: full-year ledger expor
 #:
 #:     api/tests/test_upload_types.py::test_the_picker_and_the_server_agree
 #:     compares the two sets and fails if they ever separate again.
-ALLOWED_ACCOUNTANT_EXTENSIONS: frozenset[str] = frozenset({
-	# Portable documents and word processing, macro-free formats only
-	".pdf", ".docx", ".odt",
-	# Spreadsheets, macro-free formats only
-	".xlsx", ".ods",
-	# Presentations, macro-free formats only
-	".pptx", ".odp",
-	# Plain text, notes and structured data
-	".txt", ".md", ".markdown", ".csv", ".tsv", ".psv", ".dat",
-	".json", ".jsonl", ".ndjson", ".xml",
-	# Accounting and banking interchange formats
-	".ofx", ".qfx", ".qbo", ".qif", ".mt940", ".sta", ".camt", ".aba",
-	".bai", ".bai2", ".edi", ".x12", ".iif", ".xbrl", ".ubl",
-	# Scans and photographed receipts.
-	".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
-})
+ALLOWED_ACCOUNTANT_EXTENSIONS: frozenset[str] = frozenset(
+	{
+		# Portable documents and word processing, macro-free formats only
+		".pdf",
+		".docx",
+		".odt",
+		# Spreadsheets, macro-free formats only
+		".xlsx",
+		".ods",
+		# Presentations, macro-free formats only
+		".pptx",
+		".odp",
+		# Plain text, notes and structured data
+		".txt",
+		".md",
+		".markdown",
+		".csv",
+		".tsv",
+		".psv",
+		".dat",
+		".json",
+		".jsonl",
+		".ndjson",
+		".xml",
+		# Accounting and banking interchange formats
+		".ofx",
+		".qfx",
+		".qbo",
+		".qif",
+		".mt940",
+		".sta",
+		".camt",
+		".aba",
+		".bai",
+		".bai2",
+		".edi",
+		".x12",
+		".iif",
+		".xbrl",
+		".ubl",
+		# Scans and photographed receipts.
+		".png",
+		".jpg",
+		".jpeg",
+		".gif",
+		".webp",
+		".bmp",
+		".tif",
+		".tiff",
+	}
+)
 
 #: Every picture format this site accepts.
-_IMAGE_EXTENSIONS: frozenset[str] = frozenset({
-	".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
-})
+_IMAGE_EXTENSIONS: frozenset[str] = frozenset(
+	{
+		".png",
+		".jpg",
+		".jpeg",
+		".gif",
+		".webp",
+		".bmp",
+		".tif",
+		".tiff",
+	}
+)
 
 #: Spreadsheets, which some desks accept and others insist on. Named here so
 #: the browser can size its two separate budgets without a list of its own.
@@ -2208,9 +2375,15 @@ _EXCEL_EXTENSIONS: frozenset[str] = frozenset({".xlsx", ".xls", ".ods"})
 #: refused: the browser offered them, the upload took them, and the service then
 #: rejected the message. They are ordinary scanner output and there was no
 #: reason for them not to work; a format conversion is not the customer's job.
-_PLATFORM_IMAGE_EXTENSIONS: frozenset[str] = frozenset({
-	".png", ".jpg", ".jpeg", ".gif", ".webp",
-})
+_PLATFORM_IMAGE_EXTENSIONS: frozenset[str] = frozenset(
+	{
+		".png",
+		".jpg",
+		".jpeg",
+		".gif",
+		".webp",
+	}
+)
 
 #: The whitelisted route every stored attachment URL points at. Storing the
 #: endpoint rather than a filesystem path is what lets the file itself live in
@@ -2379,8 +2552,7 @@ def remember_the_cancellation(session_id: str) -> None:
 	customer had withdrawn.
 	"""
 	try:
-		_cache().set_value(_cancelled_key(session_id), 1,
-						   expires_in_sec=_CANCELLED_TTL_SECONDS)
+		_cache().set_value(_cancelled_key(session_id), 1, expires_in_sec=_CANCELLED_TTL_SECONDS)
 	except Exception:
 		pass
 
@@ -2538,7 +2710,11 @@ def _reading_travels_as(display_name: str, already_used: set) -> str:
 
 
 def _upload_parts(
-	file_urls, user: str, parts: list, handles: list, scan: bool = False,
+	file_urls,
+	user: str,
+	parts: list,
+	handles: list,
+	scan: bool = False,
 ) -> tuple:
 	"""The body of `build_upload_parts`, separated so a failure can clean up."""
 	used_names: set = set()
@@ -2602,7 +2778,6 @@ def _as_a_picture_the_service_can_read(file_path: str, display_name: str):
 		return None
 
 	return (f"{display_name}.png", payload)
-
 
 
 @frappe.whitelist()
@@ -2695,5 +2870,3 @@ def get_active_banner_message() -> dict:
 			message=f"Could not fetch active banner: {exc}",
 		)
 	return {"message": None}
-
-

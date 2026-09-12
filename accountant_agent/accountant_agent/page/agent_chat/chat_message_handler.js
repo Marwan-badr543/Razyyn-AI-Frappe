@@ -17,55 +17,63 @@ class ChatMessageHandler {
 
 	save_draft(session_id) {
 		if (!session_id) return;
-		let text = this.chat.textarea.val() || '';
+		let text = this.chat.textarea.val() || "";
 		let attachments = [];
 		if (this.chat.file_upload_handler) {
 			attachments = [...this.chat.file_upload_handler.pending_attachments];
 		}
 		this.drafts[session_id] = {
 			text: text,
-			attachments: attachments
+			attachments: attachments,
 		};
 	}
 
 	restore_draft(session_id) {
 		if (!session_id) return;
-		let draft = this.drafts[session_id] || { text: '', attachments: [] };
+		let draft = this.drafts[session_id] || { text: "", attachments: [] };
 		this.chat.textarea.val(draft.text);
-		this.chat.textarea.trigger('input');
+		this.chat.textarea.trigger("input");
 
 		if (this.chat.file_upload_handler) {
-			this.chat.file_upload_handler.$preview_area.find('.agent-upload-preview-items').empty();
+			this.chat.file_upload_handler.$preview_area
+				.find(".agent-upload-preview-items")
+				.empty();
 			this.chat.file_upload_handler.$preview_area.hide();
 			this.chat.file_upload_handler.pending_attachments = [...draft.attachments];
 
 			if (draft.attachments.length > 0) {
-				draft.attachments.forEach(att => {
+				draft.attachments.forEach((att) => {
 					let is_img = att.is_image;
-					let type = is_img ? 'image' : 'file';
+					let type = is_img ? "image" : "file";
 					let icon_html;
-					if (type === 'image') {
+					if (type === "image") {
 						icon_html = `<img src="${att.url}" class="agent-preview-thumb" alt="${att.name}" />`;
 					} else {
-						icon_html = `<span class="agent-preview-icon">${this.chat.file_upload_handler._get_file_icon(att.name)}</span>`;
+						icon_html = `<span class="agent-preview-icon">${this.chat.file_upload_handler._get_file_icon(
+							att.name
+						)}</span>`;
 					}
 
 					let $item = $(`
 						<div class="agent-preview-item success" id="${att.id}" data-type="${type}" data-name="${att.name}">
 							${icon_html}
-							<span class="agent-preview-name" title="${att.name}">${this.chat.file_upload_handler._truncate_name(att.name, 20)}</span>
-							<button class="agent-preview-remove" title="${__('Remove')}">
+							<span class="agent-preview-name" title="${
+								att.name
+							}">${this.chat.file_upload_handler._truncate_name(att.name, 20)}</span>
+							<button class="agent-preview-remove" title="${__("Remove")}">
 								<i class="fa fa-times"></i>
 							</button>
 						</div>
 					`);
 
-					$item.find('.agent-preview-remove').on('click', (e) => {
+					$item.find(".agent-preview-remove").on("click", (e) => {
 						e.stopPropagation();
 						this.chat.file_upload_handler._remove_attachment(att.id);
 					});
 
-					this.chat.file_upload_handler.$preview_area.find('.agent-upload-preview-items').append($item);
+					this.chat.file_upload_handler.$preview_area
+						.find(".agent-upload-preview-items")
+						.append($item);
 				});
 				this.chat.file_upload_handler.$preview_area.show();
 			}
@@ -85,7 +93,7 @@ class ChatMessageHandler {
 		// a word. With twenty files allowed that stopped being a rare race and
 		// became the normal case.
 		if (this.chat.file_upload_handler && this.chat.file_upload_handler.has_pending_uploads()) {
-			frappe.show_alert({ message: __('Finishing your uploads…'), indicator: 'blue' }, 3);
+			frappe.show_alert({ message: __("Finishing your uploads…"), indicator: "blue" }, 3);
 			await this.chat.file_upload_handler.wait_for_uploads();
 		}
 
@@ -95,17 +103,21 @@ class ChatMessageHandler {
 		// been read left the customer looking at their own typing for two
 		// minutes with nothing to press.
 
-		let has_attachments = this.chat.file_upload_handler && this.chat.file_upload_handler.has_attachments();
+		let has_attachments =
+			this.chat.file_upload_handler && this.chat.file_upload_handler.has_attachments();
 
-		if ((!message || message.trim() === '') && !has_attachments) return;
+		if ((!message || message.trim() === "") && !has_attachments) return;
 
 		if (message && message.length > 10000) {
-			frappe.show_alert({ message: __('Message length exceeds the 10000 character limit.'), indicator: 'red' });
+			frappe.show_alert({
+				message: __("Message length exceeds the 10000 character limit."),
+				indicator: "red",
+			});
 			return;
 		}
 
 		let file_urls = null;
-		let attachment_markers = '';
+		let attachment_markers = "";
 		// The switch as it stands NOW decides what travels — not whether a
 		// reading happens to have been done earlier.
 		let scan = !!(this.chat.file_upload_handler && this.chat.file_upload_handler.scan_enabled);
@@ -116,15 +128,15 @@ class ChatMessageHandler {
 		}
 
 		// Reset Textarea
-		this.chat.textarea.val('');
-		this.chat.textarea.css('height', '46px');
-		this.chat.layout.find('.agent-char-counter').text('0 / 10000');
+		this.chat.textarea.val("");
+		this.chat.textarea.css("height", "46px");
+		this.chat.layout.find(".agent-char-counter").text("0 / 10000");
 
 		if (this.chat.file_upload_handler) {
 			this.chat.file_upload_handler.clear_attachments();
 		}
 
-		let full_message = attachment_markers + (message || '');
+		let full_message = attachment_markers + (message || "");
 		await this.send_chat_message(full_message.trim(), file_urls, scan);
 	}
 
@@ -136,14 +148,17 @@ class ChatMessageHandler {
 
 		// Handle unsaved draft
 		if (this.chat.session_manager.is_new_chat_draft) {
-			let clean_msg = message.replace(/\[FILE:[^\]]+\]/g, '').replace(/\[IMAGE:[^\]]+\]/g, '').trim();
-			let chat_title = (clean_msg || 'File upload').substring(0, 30);
-			if (clean_msg.length > 30) chat_title += '...';
+			let clean_msg = message
+				.replace(/\[FILE:[^\]]+\]/g, "")
+				.replace(/\[IMAGE:[^\]]+\]/g, "")
+				.trim();
+			let chat_title = (clean_msg || "File upload").substring(0, 30);
+			if (clean_msg.length > 30) chat_title += "...";
 
-			frappe.dom.freeze(__('Starting conversation...'));
+			frappe.dom.freeze(__("Starting conversation..."));
 			try {
 				await frappe.xcall(
-					'accountant_agent.accountant_agent.page.agent_chat.agent_chat.create_chat_with_id',
+					"accountant_agent.accountant_agent.page.agent_chat.agent_chat.create_chat_with_id",
 					{ session_id: active_session_id, title: chat_title }
 				);
 				if (this.chat.session_manager.session_id === active_session_id) {
@@ -160,70 +175,104 @@ class ChatMessageHandler {
 		}
 
 		let sanitised_message = message;
+		let echoed_row = null;
 
 		if (this.chat.session_manager.session_id === active_session_id) {
-			if (message !== "Approve" && (!message.startsWith || !message.startsWith("Clarification Response:"))) {
-				this.chat.ui_manager.append_message(this.chat.msg_box, 'user', message, false, new Date().toISOString());
+			if (
+				message !== "Approve" &&
+				(!message.startsWith || !message.startsWith("Clarification Response:"))
+			) {
+				this.chat.ui_manager.append_message(
+					this.chat.msg_box,
+					"user",
+					message,
+					false,
+					new Date().toISOString()
+				);
+				// The row exists synchronously the moment append_message returns
+				// (its own Promise is just for the AI typing-effect branch) --
+				// safe to grab it here and stamp its id once the send resolves.
+				echoed_row = this.chat.msg_box.find(".agent-msg-row").last();
 			}
 
 			// Sanitise for backend storage and network requests
 			sanitised_message = frappe.utils.xss_sanitise(message);
-			
-			// Initialize the stream bubble immediately with "Thinking..." status
-			let stream_id = `stream-${this.chat.generate_uuid()}`;
-			this.chat.active_streams = this.chat.active_streams || {};
-			this.chat.active_streams[active_session_id] = {
-				bubble_id: stream_id,
-				accumulated: "",
-				reasoning: "",
-				steps: [{ name: __("Thinking..."), type: 'node' }],
-				status: __("Thinking..."),
-				start_time: Date.now(),
-				elapsed_seconds: 0
-			};
-			this.chat.start_stream_timer(active_session_id);
-			
-			this.chat.ui_manager.create_stream_bubble(this.chat.msg_box, stream_id, active_session_id);
-			this.chat.ui_manager.update_stream_status(this.chat.msg_box, stream_id, __("Thinking..."), [{ name: __("Thinking..."), type: 'node' }]);
-			this.set_button_state('cancel');
 		}
 
-		this.processing_sessions.add(active_session_id);
 		// Always 'auto': the customer talks to one entity — Razyyn AI — and the
 		// manager on the server decides which specialists do the work. The field
 		// survives on the wire for backend compatibility only.
-		let agent_type = 'auto';
+		let agent_type = "auto";
+		let agent_email = localStorage.getItem("connected_agent_email");
+
+		let res = await this._dispatch_to_agent(
+			active_session_id,
+			"accountant_agent.accountant_agent.page.agent_chat.agent_chat.send_message",
+			{
+				message: sanitised_message,
+				session_id: active_session_id,
+				agent_email: agent_email,
+				agent_type: agent_type,
+				file_urls: file_urls ? JSON.stringify(file_urls) : null,
+				scan: scan ? 1 : 0,
+			}
+		);
+
+		if (echoed_row && res && res.message_name) {
+			echoed_row.attr("data-message-id", res.message_name);
+		}
+	}
+
+	// One turn, dispatched to the agent and drawn as it answers: the stream
+	// bubble bootstrap, the queued/synchronous response handling, and the
+	// error handling are the same whether the turn is a plain send or an
+	// edit-and-resubmit -- only the RPC method/params differ, so both call
+	// this instead of keeping two copies of the same ~100 lines.
+	async _dispatch_to_agent(active_session_id, xcall_method, xcall_params) {
+		// Initialize the stream bubble immediately with "Thinking..." status
+		let stream_id = `stream-${this.chat.generate_uuid()}`;
+		this.chat.active_streams = this.chat.active_streams || {};
+		this.chat.active_streams[active_session_id] = {
+			bubble_id: stream_id,
+			accumulated: "",
+			reasoning: "",
+			steps: [{ name: __("Thinking..."), type: "node" }],
+			status: __("Thinking..."),
+			start_time: Date.now(),
+			elapsed_seconds: 0,
+		};
+		this.chat.start_stream_timer(active_session_id);
+
+		this.chat.ui_manager.create_stream_bubble(this.chat.msg_box, stream_id, active_session_id);
+		this.chat.ui_manager.update_stream_status(
+			this.chat.msg_box,
+			stream_id,
+			__("Thinking..."),
+			[{ name: __("Thinking..."), type: "node" }]
+		);
+		this.set_button_state("cancel");
+
+		this.processing_sessions.add(active_session_id);
 
 		try {
-			let agent_email = localStorage.getItem('connected_agent_email');
-			let res = await frappe.xcall(
-				'accountant_agent.accountant_agent.page.agent_chat.agent_chat.send_message',
-				{
-					message: sanitised_message,
-					session_id: active_session_id,
-					agent_email: agent_email,
-					agent_type: agent_type,
-					file_urls: file_urls ? JSON.stringify(file_urls) : null,
-					scan: scan ? 1 : 0
-				}
-			);
+			let res = await frappe.xcall(xcall_method, xcall_params);
 
 			if (this.cancelled_sessions.has(active_session_id)) {
 				this.cancelled_sessions.delete(active_session_id);
-				return;
+				return res;
 			}
 
 			if (this.chat.session_manager.session_id === active_session_id) {
-				if (res && res.status === 'queued') {
+				if (res && res.status === "queued") {
 					// Bubble and timer are already running, render background sidebar list and return
 					this.chat.session_manager.render_chat_list();
-					return;
+					return res;
 				}
 
-				this.set_button_state('send');
+				this.set_button_state("send");
 				if (res && res.response) {
 					await this.chat.session_manager.load_chats(false);
-					
+
 					// If completed synchronously without streaming, finalize the existing stream bubble
 					if (this.chat.active_streams && this.chat.active_streams[active_session_id]) {
 						let stream = this.chat.active_streams[active_session_id];
@@ -236,7 +285,13 @@ class ChatMessageHandler {
 						);
 						delete this.chat.active_streams[active_session_id];
 					} else {
-						await this.chat.ui_manager.append_message(this.chat.msg_box, 'ai', res.response, true, new Date().toISOString());
+						await this.chat.ui_manager.append_message(
+							this.chat.msg_box,
+							"ai",
+							res.response,
+							true,
+							new Date().toISOString()
+						);
 					}
 				} else {
 					await this.chat.session_manager.load_chats(false);
@@ -244,6 +299,7 @@ class ChatMessageHandler {
 			} else {
 				await this.chat.session_manager.load_chats(false);
 			}
+			return res;
 		} catch (err) {
 			if (this.cancelled_sessions.has(active_session_id)) {
 				this.cancelled_sessions.delete(active_session_id);
@@ -251,11 +307,11 @@ class ChatMessageHandler {
 			}
 
 			if (this.chat.session_manager.session_id === active_session_id) {
-				this.set_button_state('send');
+				this.set_button_state("send");
 				console.error("Message send failed:", err);
-				let error_msg = err.message || '';
-				if (!error_msg.includes('cancelled') && !error_msg.includes('cancellation')) {
-					let final_err = error_msg || __('Unable to get response from Razyyn.');
+				let error_msg = err.message || "";
+				if (!error_msg.includes("cancelled") && !error_msg.includes("cancellation")) {
+					let final_err = error_msg || __("Unable to get response from Razyyn.");
 					if (this.chat.active_streams && this.chat.active_streams[active_session_id]) {
 						let stream = this.chat.active_streams[active_session_id];
 						this.chat.ui_manager.finalize_stream_bubble(
@@ -267,13 +323,102 @@ class ChatMessageHandler {
 						);
 						delete this.chat.active_streams[active_session_id];
 					} else {
-						this.chat.ui_manager.append_message(this.chat.msg_box, 'ai', `⚠️ **Error:** ${final_err}`);
+						this.chat.ui_manager.append_message(
+							this.chat.msg_box,
+							"ai",
+							`⚠️ **Error:** ${final_err}`
+						);
 					}
 				}
 			}
 		} finally {
 			this.processing_sessions.delete(active_session_id);
 			delete this.clarifications[active_session_id];
+		}
+	}
+
+	// ─── Edit a previously sent message ─────────────────────────────────────
+	//
+	// Like ChatGPT/Claude's edit-and-resubmit: the edited bubble and every
+	// bubble after it are dropped from this session's own transcript, and the
+	// edited text is re-sent as a brand new turn. The server mints the agent a
+	// fresh thread for it (see edit_message() / AgentChats.backend_session_id)
+	// so the regenerated reply is not still shaped by the discarded ones.
+	async submit_message_edit(row, new_text) {
+		let session_id = this.chat.session_manager.session_id;
+		if (!session_id) return;
+
+		let message_id = row.attr("data-message-id");
+		if (!message_id) {
+			frappe.show_alert({
+				message: __("Still sending — try again in a moment."),
+				indicator: "orange",
+			});
+			return;
+		}
+		// One active turn per session at a time, same rule as sending a fresh
+		// message: an edit while a run is in flight would race the discarded
+		// run's reply against the regenerated one over the same DOM.
+		if (this.processing_sessions.has(session_id)) {
+			frappe.show_alert({
+				message: __("Please wait for the current response to finish."),
+				indicator: "orange",
+			});
+			return;
+		}
+
+		let is_first_message =
+			row.prevAll(".agent-msg-row.user, .agent-msg-row.human").length === 0;
+		let title = null;
+		if (is_first_message) {
+			// Same derivation as a brand new chat's title (send_user_message /
+			// create_chat_with_id caller) -- editing the opening message is
+			// still opening the conversation, just a second time.
+			let clean_msg = new_text
+				.replace(/\[FILE:[^\]]+\]/g, "")
+				.replace(/\[IMAGE:[^\]]+\]/g, "")
+				.trim();
+			title = (clean_msg || "File upload").substring(0, 30);
+			if (clean_msg.length > 30) title += "...";
+		}
+
+		// Drop this bubble and everything after it -- the edited turn and its
+		// regenerated reply are appended fresh below, same as any new message.
+		row.nextAll(".agent-msg-row").remove();
+		row.remove();
+
+		if (this.chat.active_streams) delete this.chat.active_streams[session_id];
+		this.cancelled_sessions.delete(session_id);
+
+		let sanitised_message = frappe.utils.xss_sanitise(new_text);
+		this.chat.ui_manager.append_message(
+			this.chat.msg_box,
+			"user",
+			new_text,
+			false,
+			new Date().toISOString()
+		);
+		let echoed_row = this.chat.msg_box.find(".agent-msg-row").last();
+
+		let agent_email = localStorage.getItem("connected_agent_email");
+		let res = await this._dispatch_to_agent(
+			session_id,
+			"accountant_agent.accountant_agent.page.agent_chat.agent_chat.edit_message",
+			{
+				session_id: session_id,
+				message_name: message_id,
+				message: sanitised_message,
+				agent_email: agent_email,
+				agent_type: "auto",
+				title: title,
+			}
+		);
+
+		if (res && res.message_name) {
+			echoed_row.attr("data-message-id", res.message_name);
+		}
+		if (title) {
+			await this.chat.session_manager.load_chats(false);
 		}
 	}
 
@@ -285,24 +430,29 @@ class ChatMessageHandler {
 	// because they cancelled it. Every one of those puts the button back to
 	// 'send' and reopens the composer, so nothing here needs to know which.
 	set_button_state(state) {
-		let btn = this.chat.layout.find('#agent-send-trigger');
-		if (state === 'cancel') {
-			btn.removeClass('agent-send-btn').addClass('agent-cancel-btn');
-			btn.attr('title', __('Cancel Execution'));
+		let btn = this.chat.layout.find("#agent-send-trigger");
+		if (state === "cancel") {
+			btn.removeClass("agent-send-btn").addClass("agent-cancel-btn");
+			btn.attr("title", __("Cancel Execution"));
 			btn.html(`<svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>`);
-			this.chat.textarea.prop('disabled', true);
-			this.chat.textarea.attr('placeholder', __('Working — you can cancel at any time.'));
-			this.chat.layout.find('.agent-attach-btn').prop('disabled', true).css('opacity', 0.5);
+			this.chat.textarea.prop("disabled", true);
+			this.chat.textarea.attr("placeholder", __("Working — you can cancel at any time."));
+			this.chat.layout.find(".agent-attach-btn").prop("disabled", true).css("opacity", 0.5);
 		} else {
-			btn.removeClass('agent-cancel-btn').addClass('agent-send-btn');
-			btn.attr('title', __('Send Message'));
-			btn.html(`<svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>`);
-			btn.prop('disabled', false).css('opacity', 1);
-			this.chat.textarea.prop('disabled', false);
-			this.chat.textarea.attr('placeholder', __('Type your financial question or query here...'));
-			this.chat.layout.find('.agent-attach-btn').prop('disabled', false).css('opacity', 1);
+			btn.removeClass("agent-cancel-btn").addClass("agent-send-btn");
+			btn.attr("title", __("Send Message"));
+			btn.html(
+				`<svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>`
+			);
+			btn.prop("disabled", false).css("opacity", 1);
+			this.chat.textarea.prop("disabled", false);
+			this.chat.textarea.attr(
+				"placeholder",
+				__("Type your financial question or query here...")
+			);
+			this.chat.layout.find(".agent-attach-btn").prop("disabled", false).css("opacity", 1);
 			this.chat.textarea.focus();
-			this.chat.textarea.trigger('input');
+			this.chat.textarea.trigger("input");
 		}
 	}
 
@@ -310,7 +460,7 @@ class ChatMessageHandler {
 		let session_id = this.chat.session_manager.session_id;
 		if (!session_id) return;
 
-		let agent_email = localStorage.getItem('connected_agent_email');
+		let agent_email = localStorage.getItem("connected_agent_email");
 		if (!agent_email) return;
 
 		this.cancelled_sessions.add(session_id);
@@ -335,15 +485,17 @@ class ChatMessageHandler {
 			this.chat.popup_container.hide().empty();
 		}
 
-		this.set_button_state('send');
+		this.set_button_state("send");
 		this.chat.session_manager.render_chat_list();
 
-		frappe.xcall(
-			'accountant_agent.accountant_agent.page.agent_chat.agent_chat.cancel_agent',
-			{ session_id: session_id, agent_email: agent_email }
-		).catch(err => {
-			console.error("Cancellation background request failed:", err);
-		});
+		frappe
+			.xcall("accountant_agent.accountant_agent.page.agent_chat.agent_chat.cancel_agent", {
+				session_id: session_id,
+				agent_email: agent_email,
+			})
+			.catch((err) => {
+				console.error("Cancellation background request failed:", err);
+			});
 	}
 
 	show_clarification_popup(questions, session_id = null) {
@@ -355,7 +507,7 @@ class ChatMessageHandler {
 		this.clarifications[session_id] = {
 			questions: questions,
 			index: 0,
-			answers: {}
+			answers: {},
 		};
 
 		if (this.chat.session_manager.session_id === session_id) {
@@ -377,43 +529,52 @@ class ChatMessageHandler {
 		let total = state.questions.length;
 		let current_num = state.index + 1;
 
-		let options_html = '';
+		let options_html = "";
 		if (q.options && q.options.length > 0) {
-			let rows = q.options.map((opt, idx) => {
-				let is_active = state.answers[q.id] === opt;
-				// `tabindex` IS WHAT MAKES ENTER WORK AT ALL.
-				//
-				// These are divs. A div with no tabindex cannot take focus, so
-				// clicking one left `document.body` focused — and a keydown on
-				// the body never passes through the picker, which is where the
-				// Enter handler is bound. Pressing Enter after choosing an
-				// option therefore did nothing whatsoever: *"when agent ask
-				// question enter button should submit it even if its options
-				// not custom reply"*.
-				return `
-					<div class="clarification-row-option ${is_active ? 'active' : ''}" data-value="${opt}" tabindex="0" role="button">
+			let rows = q.options
+				.map((opt, idx) => {
+					let is_active = state.answers[q.id] === opt;
+					// `tabindex` IS WHAT MAKES ENTER WORK AT ALL.
+					//
+					// These are divs. A div with no tabindex cannot take focus, so
+					// clicking one left `document.body` focused — and a keydown on
+					// the body never passes through the picker, which is where the
+					// Enter handler is bound. Pressing Enter after choosing an
+					// option therefore did nothing whatsoever: *"when agent ask
+					// question enter button should submit it even if its options
+					// not custom reply"*.
+					return `
+					<div class="clarification-row-option ${
+						is_active ? "active" : ""
+					}" data-value="${opt}" tabindex="0" role="button">
 						<span class="option-num">${idx + 1}</span>
 						<span class="option-text">${opt}</span>
 					</div>
 				`;
-			}).join('');
+				})
+				.join("");
 			options_html = `<div class="clarification-options-list" style="display: flex; flex-direction: column; gap: 8px; margin: 12px 0;">${rows}</div>`;
 		}
 
-		let custom_input_html = '';
+		let custom_input_html = "";
 		if (q.allow_custom !== false) {
-			let is_custom_active = state.answers[q.id] && (!q.options || !q.options.includes(state.answers[q.id]));
-			let custom_val = is_custom_active ? state.answers[q.id] : '';
+			let is_custom_active =
+				state.answers[q.id] && (!q.options || !q.options.includes(state.answers[q.id]));
+			let custom_val = is_custom_active ? state.answers[q.id] : "";
 			custom_input_html = `
-				<div class="clarification-row-option custom-option-row ${is_custom_active ? 'active' : ''}" tabindex="0" role="button" style="flex-direction: column; align-items: stretch; gap: 8px;">
+				<div class="clarification-row-option custom-option-row ${
+					is_custom_active ? "active" : ""
+				}" tabindex="0" role="button" style="flex-direction: column; align-items: stretch; gap: 8px;">
 					<div style="display: flex; align-items: center; gap: 10px;">
 						<span class="option-num">${(q.options || []).length + 1}</span>
-						<span class="option-text">${__('Other (write your answer)')}</span>
+						<span class="option-text">${__("Other (write your answer)")}</span>
 					</div>
-					<input type="text" class="clarification-popup-custom-input" 
-						placeholder="${__('Type your custom answer here...')}" 
+					<input type="text" class="clarification-popup-custom-input"
+						placeholder="${__("Type your custom answer here...")}"
 						value="${custom_val}"
-						style="font-size: 13px; border-radius: 6px; padding: 6px 12px; display: ${is_custom_active ? 'block' : 'none'}; width: 100%; border: 1px solid var(--chat-border); background-color: var(--chat-bg); color: var(--chat-text);" />
+						style="font-size: 13px; border-radius: 6px; padding: 6px 12px; display: ${
+							is_custom_active ? "block" : "none"
+						}; width: 100%; border: 1px solid var(--chat-border); background-color: var(--chat-bg); color: var(--chat-text);" />
 				</div>
 			`;
 		}
@@ -425,11 +586,11 @@ class ChatMessageHandler {
 					${q.question}
 				</span>
 				<div class="clarification-popup-nav">
-					<button class="clarification-nav-btn btn-prev" ${current_num === 1 ? 'disabled' : ''}>
+					<button class="clarification-nav-btn btn-prev" ${current_num === 1 ? "disabled" : ""}>
 						<i class="fa fa-chevron-left"></i>
 					</button>
-					<span>${current_num} ${__('of')} ${total}</span>
-					<button class="clarification-nav-btn btn-next" ${current_num === total ? 'disabled' : ''}>
+					<span>${current_num} ${__("of")} ${total}</span>
+					<button class="clarification-nav-btn btn-next" ${current_num === total ? "disabled" : ""}>
 						<i class="fa fa-chevron-right"></i>
 					</button>
 				</div>
@@ -439,8 +600,10 @@ class ChatMessageHandler {
 				${custom_input_html}
 			</div>
 			<div class="clarification-popup-footer">
-				<button class="clarification-popup-btn btn-skip">${__('Skip')}</button>
-				<button class="clarification-popup-btn btn-continue">${current_num === total ? __('Submit') : __('Continue')}</button>
+				<button class="clarification-popup-btn btn-skip">${__("Skip")}</button>
+				<button class="clarification-popup-btn btn-continue">${
+					current_num === total ? __("Submit") : __("Continue")
+				}</button>
 			</div>
 		`;
 
@@ -458,9 +621,9 @@ class ChatMessageHandler {
 		// ones bound to the container itself — so without this the Enter
 		// handler below is added again for every question, and answering the
 		// third question of a set would fire it three times.
-		this.chat.popup_container.off('keydown.clarification');
+		this.chat.popup_container.off("keydown.clarification");
 
-		this.chat.popup_container.find('.btn-prev').on('click', (e) => {
+		this.chat.popup_container.find(".btn-prev").on("click", (e) => {
 			e.preventDefault();
 			if (state.index > 0) {
 				state.index--;
@@ -468,7 +631,7 @@ class ChatMessageHandler {
 			}
 		});
 
-		this.chat.popup_container.find('.btn-next').on('click', (e) => {
+		this.chat.popup_container.find(".btn-next").on("click", (e) => {
 			e.preventDefault();
 			if (state.index < state.questions.length - 1) {
 				state.index++;
@@ -476,17 +639,19 @@ class ChatMessageHandler {
 			}
 		});
 
-		this.chat.popup_container.find('.clarification-row-option:not(.custom-option-row)').on('click', function(e) {
-			e.preventDefault();
-			let val = $(this).attr('data-value');
-			state.answers[q.id] = val;
-			self.chat.popup_container.find('.clarification-row-option').removeClass('active');
-			$(this).addClass('active');
-			self.chat.popup_container.find('.clarification-popup-custom-input').hide().val('');
-			// Focus follows the choice, so the next Enter is heard inside the
-			// picker rather than by the page.
-			$(this).focus();
-		});
+		this.chat.popup_container
+			.find(".clarification-row-option:not(.custom-option-row)")
+			.on("click", function (e) {
+				e.preventDefault();
+				let val = $(this).attr("data-value");
+				state.answers[q.id] = val;
+				self.chat.popup_container.find(".clarification-row-option").removeClass("active");
+				$(this).addClass("active");
+				self.chat.popup_container.find(".clarification-popup-custom-input").hide().val("");
+				// Focus follows the choice, so the next Enter is heard inside the
+				// picker rather than by the page.
+				$(this).focus();
+			});
 
 		// ENTER ON A CHOSEN OPTION SUBMITS IT.
 		//
@@ -498,44 +663,48 @@ class ChatMessageHandler {
 		// `stopPropagation` is not tidiness. Without it this bubbles to the
 		// container handler below, which calls `advance_or_submit` a second
 		// time, and one keystroke skips a question.
-		this.chat.popup_container.find('.clarification-row-option:not(.custom-option-row)').on('keydown', function(e) {
-			if (e.key !== 'Enter' || e.shiftKey) return;
-			e.preventDefault();
-			e.stopPropagation();
+		this.chat.popup_container
+			.find(".clarification-row-option:not(.custom-option-row)")
+			.on("keydown", function (e) {
+				if (e.key !== "Enter" || e.shiftKey) return;
+				e.preventDefault();
+				e.stopPropagation();
 
-			state.answers[q.id] = $(this).attr('data-value');
-			self.chat.popup_container.find('.clarification-row-option').removeClass('active');
-			$(this).addClass('active');
-			self.advance_or_submit(session_id);
-		});
+				state.answers[q.id] = $(this).attr("data-value");
+				self.chat.popup_container.find(".clarification-row-option").removeClass("active");
+				$(this).addClass("active");
+				self.advance_or_submit(session_id);
+			});
 
-		this.chat.popup_container.find('.custom-option-row').on('click', function(e) {
-			if ($(e.target).hasClass('clarification-popup-custom-input')) return;
+		this.chat.popup_container.find(".custom-option-row").on("click", function (e) {
+			if ($(e.target).hasClass("clarification-popup-custom-input")) return;
 			e.preventDefault();
-			self.chat.popup_container.find('.clarification-row-option').removeClass('active');
-			$(this).addClass('active');
-			let input = $(this).find('.clarification-popup-custom-input');
+			self.chat.popup_container.find(".clarification-row-option").removeClass("active");
+			$(this).addClass("active");
+			let input = $(this).find(".clarification-popup-custom-input");
 			input.show().focus();
 		});
 
 		// Enter on "Other" OPENS the box; it does not submit. There is nothing
 		// to send yet, and an empty answer is not nothing — the agent reads it
 		// as "I don't know" and decides the treatment on their behalf.
-		this.chat.popup_container.find('.custom-option-row').on('keydown', function(e) {
-			if (e.key !== 'Enter' || e.shiftKey) return;
-			if ($(e.target).hasClass('clarification-popup-custom-input')) return;
+		this.chat.popup_container.find(".custom-option-row").on("keydown", function (e) {
+			if (e.key !== "Enter" || e.shiftKey) return;
+			if ($(e.target).hasClass("clarification-popup-custom-input")) return;
 			e.preventDefault();
 			e.stopPropagation();
 
-			self.chat.popup_container.find('.clarification-row-option').removeClass('active');
-			$(this).addClass('active');
-			$(this).find('.clarification-popup-custom-input').show().focus();
+			self.chat.popup_container.find(".clarification-row-option").removeClass("active");
+			$(this).addClass("active");
+			$(this).find(".clarification-popup-custom-input").show().focus();
 		});
 
-		this.chat.popup_container.find('.clarification-popup-custom-input').on('input', function() {
-			let val = $(this).val().trim();
-			state.answers[q.id] = val;
-		});
+		this.chat.popup_container
+			.find(".clarification-popup-custom-input")
+			.on("input", function () {
+				let val = $(this).val().trim();
+				state.answers[q.id] = val;
+			});
 
 		// ENTER SUBMITS THE ANSWER.
 		//
@@ -547,22 +716,24 @@ class ChatMessageHandler {
 		// Shift+Enter is left alone so a multi-line answer is still possible,
 		// and the value is read straight off the field rather than trusting
 		// the `input` handler to have fired for the last keystroke.
-		this.chat.popup_container.find('.clarification-popup-custom-input').on('keydown', function(e) {
-			if (e.key !== 'Enter' || e.shiftKey) return;
-			e.preventDefault();
-			e.stopPropagation();
+		this.chat.popup_container
+			.find(".clarification-popup-custom-input")
+			.on("keydown", function (e) {
+				if (e.key !== "Enter" || e.shiftKey) return;
+				e.preventDefault();
+				e.stopPropagation();
 
-			// Read straight off the field rather than trusting the `input`
-			// handler to have fired for the last keystroke.
-			let typed = $(this).val().trim();
-			// An empty box on Enter is a slip, not an answer — and an empty
-			// answer makes the agent decide the treatment for them. Skip is
-			// where deliberately saying nothing lives.
-			if (!typed) return;
+				// Read straight off the field rather than trusting the `input`
+				// handler to have fired for the last keystroke.
+				let typed = $(this).val().trim();
+				// An empty box on Enter is a slip, not an answer — and an empty
+				// answer makes the agent decide the treatment for them. Skip is
+				// where deliberately saying nothing lives.
+				if (!typed) return;
 
-			state.answers[q.id] = typed;
-			self.advance_or_submit(session_id);
-		});
+				state.answers[q.id] = typed;
+				self.advance_or_submit(session_id);
+			});
 
 		// And Enter anywhere else in the picker moves it on too — but ONLY
 		// once something has actually been chosen.
@@ -572,27 +743,27 @@ class ChatMessageHandler {
 		// treatment on the customer's behalf. A stray keystroke must not pick
 		// how a sale is posted. Skipping deliberately is still available, on
 		// the Skip button, where it is a decision rather than an accident.
-		this.chat.popup_container.on('keydown.clarification', function(e) {
-			if (e.key !== 'Enter' || e.shiftKey) return;
-			if ($(e.target).hasClass('clarification-popup-custom-input')) return;
+		this.chat.popup_container.on("keydown.clarification", function (e) {
+			if (e.key !== "Enter" || e.shiftKey) return;
+			if ($(e.target).hasClass("clarification-popup-custom-input")) return;
 			e.preventDefault();
 
 			// The buttons handle their own Enter; letting this run as well
 			// would advance two questions on one keystroke.
-			if ($(e.target).is('button')) return;
+			if ($(e.target).is("button")) return;
 
-			let chosen = (state.answers[q.id] || '').trim();
+			let chosen = (state.answers[q.id] || "").trim();
 			if (!chosen) return;
 			self.advance_or_submit(session_id);
 		});
 
-		this.chat.popup_container.find('.btn-skip').on('click', (e) => {
+		this.chat.popup_container.find(".btn-skip").on("click", (e) => {
 			e.preventDefault();
-			state.answers[q.id] = '';
+			state.answers[q.id] = "";
 			self.advance_or_submit(session_id);
 		});
 
-		this.chat.popup_container.find('.btn-continue').on('click', (e) => {
+		this.chat.popup_container.find(".btn-continue").on("click", (e) => {
 			e.preventDefault();
 			self.advance_or_submit(session_id);
 		});
@@ -615,18 +786,18 @@ class ChatMessageHandler {
 		if (!state) return;
 
 		let response_parts = [];
-		state.questions.forEach(q => {
-			let ans = state.answers[q.id] || '';
+		state.questions.forEach((q) => {
+			let ans = state.answers[q.id] || "";
 			response_parts.push(`* **${q.question}**: ${ans}`);
 		});
 
-		let response_msg = `Clarification Response:\n${response_parts.join('\n')}`;
-		
+		let response_msg = `Clarification Response:\n${response_parts.join("\n")}`;
+
 		if (this.chat.session_manager.session_id === session_id) {
 			// `.off` as well as `.empty`: the Enter handler is bound to the
 			// container, which survives emptying it, and a live one over a
 			// closed picker submits the previous question's answers again.
-			this.chat.popup_container.off('keydown.clarification').hide().empty();
+			this.chat.popup_container.off("keydown.clarification").hide().empty();
 		}
 
 		delete this.clarifications[session_id];

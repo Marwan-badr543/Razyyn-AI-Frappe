@@ -107,6 +107,7 @@
 		"JsBarcode": true,
 		"L": true,
 		"Chart": true,
+		"mermaid": true,
 		"DataTable": true,
 		"Cypress": true,
 		"cy": true,
