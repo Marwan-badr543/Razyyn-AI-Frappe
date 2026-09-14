@@ -1,7 +1,7 @@
-# Razyyn AI — Accountant Agent for Frappe & ERPNext v14
+# Razyyn AI — Accountant Agent for Frappe & ERPNext v15
 
-[![Frappe Version](https://img.shields.io/badge/Frappe-v14-blue.svg?style=flat-square)](https://frappeframework.com)
-[![ERPNext Version](https://img.shields.io/badge/ERPNext-v14-blueviolet.svg?style=flat-square)](https://erpnext.com)
+[![Frappe Version](https://img.shields.io/badge/Frappe-v15-blue.svg?style=flat-square)](https://frappeframework.com)
+[![ERPNext Version](https://img.shields.io/badge/ERPNext-v15-blueviolet.svg?style=flat-square)](https://erpnext.com)
 [![Python Version](https://img.shields.io/badge/Python-3.10%2B-green.svg?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-amber.svg?style=flat-square)](license.txt)
 [![Status](https://img.shields.io/badge/Production-Ready-success.svg?style=flat-square)](#)
@@ -192,9 +192,9 @@ sequenceDiagram
 
 | Component | Requirement |
 |---|---|
-| **Frappe Framework** | Version 14.x |
-| **ERPNext** | Version 14.x |
-| **Python** | Python 3.10 or 3.11 |
+| **Frappe Framework** | Version 15.x |
+| **ERPNext** | Version 15.x |
+| **Python** | Python 3.10, 3.11, or 3.12 |
 | **Python Dependencies** | `pymupdf`, `python-docx`, `pandas`, `python-pptx`, `pillow`, `requests` (managed automatically via `pyproject.toml`) |
 | **Database** | MariaDB 10.6+ or PostgreSQL 14+ |
 | **Browser Support** | Modern Chrome, Firefox, Safari, Edge (Desktop & Tablet) |
@@ -208,7 +208,7 @@ sequenceDiagram
 Open a terminal in your bench directory and run:
 ```bash
 cd /path/to/frappe-bench
-bench get-app accountant_agent https://github.com/Marwan-badr543/Razyyn-AI-Frappe --branch Razyyn-AI-Frappe-v14
+bench get-app accountant_agent https://github.com/Marwan-badr543/Razyyn-AI-Frappe --branch Razyyn-AI-Frappe-v15
 ```
 
 ### Step 2: Install the App on Your Site
@@ -222,16 +222,12 @@ This ensures all DocTypes (`Agent Settings`, `Agent Write Policy`, `Agent Write 
 bench --site [your-site-name] migrate
 ```
 
-### Step 4: Configure the Agent Backend Server URL
-Specify the address of your Razyyn AI backend server. You can configure this globally in `site_config.json`:
+### Step 4 (optional): Point at a different Agent Backend Server
+The app ships already pointed at the shared Razyyn service (`https://api.razyyn.com`) —
+skip this step unless you run your own agent server (e.g. a local one for
+development). Override it per-site with:
 ```bash
 bench --site [your-site-name] set-config accountant_agent_server_url "http://127.0.0.1:8010"
-```
-*(For production, replace with your production agent domain, e.g. `https://api.razyyn.com`)*.
-
-Alternatively, define it in `apps/accountant_agent/.env`:
-```env
-ACCOUNTANT_AGENT_SERVER_URL=http://127.0.0.1:8010
 ```
 
 ### Step 5: Build Assets & Restart Bench
@@ -521,5 +517,5 @@ Access Razyyn AI from the ERPNext desk menu or visit `/app/agent-chat`.
 
 - **License:** Open-source under the [MIT License](license.txt).
 - **Publisher:** Marwan Badr ([marwanbadr@gmail.com](mailto:marwanbadr@gmail.com)).
-- **Repository:** [https://github.com/Marwan-badr543/Razyyn-AI-Frappe](https://github.com/Marwan-badr543/Razyyn-AI-Frappe) (Branch: `Razyyn-AI-Frappe-v14`)
+- **Repository:** [https://github.com/Marwan-badr543/Razyyn-AI-Frappe](https://github.com/Marwan-badr543/Razyyn-AI-Frappe) (Branch: `Razyyn-AI-Frappe-v15`)
 - **Marketplace Documentation & Commercial Plans:** Visit [Razyyn AI](https://razyyn.com) for enterprise licenses, hosted cloud solutions, and SLA-backed support.

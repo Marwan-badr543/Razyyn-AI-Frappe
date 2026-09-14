@@ -88,7 +88,7 @@ def find_write_log_by_key(idempotency_key: str) -> dict | None:
 TWIN_WINDOW_HOURS: int = 48
 
 
-def find_committed_twin(request_digest: str, run_id: Optional[str]) -> Optional[dict]:
+def find_committed_twin(request_digest: str, run_id: str | None) -> dict | None:
     """The newest committed create of an IDENTICAL document from another run.
 
     The idempotency key deliberately contains the run id, so a customer who

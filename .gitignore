@@ -26,4 +26,4 @@ tags
 .sqlite
 
 # Local configuration
-.envaccountant_agent/agent_config.json
+.env

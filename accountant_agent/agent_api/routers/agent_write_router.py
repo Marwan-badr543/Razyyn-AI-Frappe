@@ -52,7 +52,6 @@ from accountant_agent.agent_api.services.agent_write_service import (
     cancel_existing_document,
     create_document,
     create_documents_batch,
-    write_documents_batch,
     get_write_log,
     list_agent_documents,
     load_write_policy,
@@ -60,6 +59,7 @@ from accountant_agent.agent_api.services.agent_write_service import (
     search_candidates_bulk,
     search_documents,
     submit_existing_document,
+    write_documents_batch,
 )
 
 # ─── Exception → HTTP mapping ────────────────────────────────────────────────
@@ -402,10 +402,10 @@ def create_batch(
 
 @frappe.whitelist()
 def write_batch(
-    documents: Optional[str] = None,
-    run_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    approved_by: Optional[str] = None,
+    documents: str | None = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    approved_by: str | None = None,
 ) -> dict:
     """Every action of one request, in one transaction.
 

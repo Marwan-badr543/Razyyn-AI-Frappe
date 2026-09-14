@@ -9,7 +9,8 @@
   "session_id",
   "title",
   "column_break_kotn",
-  "last_update"
+  "last_update",
+  "backend_session_id"
  ],
  "fields": [
   {
@@ -33,12 +34,18 @@
    "fieldname": "last_update",
    "fieldtype": "Datetime",
    "label": "Last Update"
+  },
+  {
+   "description": "The thread id sent to the Razyyn agent server. Starts equal to session_id; editing a message mints a new value here so the desk's own conversation state starts fresh, while this chat's own identity (session_id, its history rows, its place in the sidebar) never changes. Read via get_backend_session_id(), never this field directly, so a blank value still falls back to session_id.",
+   "fieldname": "backend_session_id",
+   "fieldtype": "Data",
+   "label": "Backend Session ID"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-31 22:36:11.590579",
+ "modified": "2026-09-12 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Accountant Agent",
  "name": "Agent Chats",

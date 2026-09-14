@@ -187,7 +187,9 @@ def _platform_request(
     error that reads like an authentication failure.
     """
     from accountant_agent.accountant_agent.page.agent_chat.agent_chat import (
-        end_agent_session, get_agent_access_token, refresh_agent_token_on_server,
+        end_agent_session,
+        get_agent_access_token,
+        refresh_agent_token_on_server,
     )
 
     access_token = get_agent_access_token(doc.email)

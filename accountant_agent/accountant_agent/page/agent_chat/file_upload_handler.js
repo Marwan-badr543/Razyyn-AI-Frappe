@@ -219,6 +219,32 @@ class FileUploadHandler {
 				}
 			}
 		});
+
+		// A screenshot copied straight from the OS clipboard, or a file
+		// copied in a file manager and pasted here, arrives as
+		// clipboardData.items, never as .files (that property only exists on
+		// drag-and-drop and the file picker's own input). Text pasted
+		// normally has no 'file' kind items, so this never intercepts an
+		// ordinary paste of words into the question box.
+		this.$textarea.on('paste', (e) => {
+			let clipboard = e.originalEvent && e.originalEvent.clipboardData;
+			if (!clipboard || !clipboard.items) return;
+			let files = [];
+			for (let item of clipboard.items) {
+				if (item.kind === 'file') {
+					let file = item.getAsFile();
+					if (file) files.push(file);
+				}
+			}
+			if (files.length > 0) {
+				// Only a file paste is ours to handle — do not swallow the
+				// event when nothing was pasted so any accompanying text in
+				// the same clipboard (a screenshot tool sometimes puts both)
+				// still lands in the textarea normally.
+				e.preventDefault();
+				this._handle_files(files);
+			}
+		});
 	}
 
 	// The manager decides which desk handles the work, so the picker accepts

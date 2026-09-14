@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -45,14 +44,17 @@ import frappe
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_config.json")
 
 #: Used when the file is missing or unreadable — an installation should never
-#: be left with no address at all just because a file was damaged.
+#: be left with no address at all just because a file was damaged. The
+#: production address, not a developer's laptop: every real install needs
+#: this same shared service, and only a Razyyn developer running the service
+#: locally needs to override it down to localhost — not the other way round.
 _DEFAULTS: dict = {
-	"agent_server_url": "http://127.0.0.1:8010",
+	"agent_server_url": "https://api.razyyn.com",
 	"ocr_languages": "eng+ara",
 	"max_upload_files": 20,
 }
 
-_file_config: Optional[dict] = None
+_file_config: dict | None = None
 
 
 def _from_file() -> dict:
@@ -62,7 +64,7 @@ def _from_file() -> dict:
 		return _file_config
 
 	try:
-		with open(_CONFIG_PATH, "r", encoding="utf-8") as handle:
+		with open(_CONFIG_PATH, encoding="utf-8") as handle:
 			loaded = json.load(handle)
 		_file_config = loaded if isinstance(loaded, dict) else {}
 	except FileNotFoundError:
@@ -80,7 +82,15 @@ def _from_file() -> dict:
 
 def get_setting(key: str) -> Any:
 	"""One setting, with the site's own configuration taking precedence."""
-	site_value = frappe.conf.get(f"accountant_agent_{key}") if frappe.conf else None
+	# Prefix is "accountant_", not "accountant_agent_": the app namespace is
+	# "accountant_agent" as a whole, and prefixing on top of a key that
+	# already starts with "agent_" (agent_server_url) produced
+	# "accountant_agent_agent_server_url" -- doubling "agent" and silently
+	# never matching the real site_config.json key every existing site
+	# actually has, "accountant_agent_server_url". Confirmed live: a site
+	# with that key correctly set still fell through to the 127.0.0.1
+	# built-in default because of this mismatch.
+	site_value = frappe.conf.get(f"accountant_{key}") if frappe.conf else None
 	if site_value not in (None, ""):
 		return site_value
 

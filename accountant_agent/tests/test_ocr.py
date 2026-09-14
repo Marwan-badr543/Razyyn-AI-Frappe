@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -16,8 +15,8 @@ from __future__ import annotations
 
 import os
 import shutil
-import types
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -290,7 +289,7 @@ class TestWhatTravelsToTheAgent(FrappeTestCase):
 		and holding the message for it is how one dead worker used to cost a
 		customer three minutes and then send the pictures anyway.
 		"""
-		path, url = self._upload("cccccccccccc_slow.png", b"raw-image-bytes")
+		_path, url = self._upload("cccccccccccc_slow.png", b"raw-image-bytes")
 
 		self.assertEqual(self._what_travels([url]), [("slow.png", b"raw-image-bytes")])
 
@@ -390,7 +389,7 @@ class TestWhatTravelsToTheAgent(FrappeTestCase):
 				os.path.join(staging, "invoice.png"), fixtures.ENGLISH_INVOICE_LINES,
 			)
 			with open(drawn, "rb") as handle:
-				path, url = self._upload("ffffffffffff_invoice.png", handle.read())
+				_path, url = self._upload("ffffffffffff_invoice.png", handle.read())
 
 		sent: dict = {}
 
@@ -468,7 +467,7 @@ class TestWhatTravelsToTheAgent(FrappeTestCase):
 				)],
 			)
 			with open(pdf, "rb") as handle:
-				path, url = self._upload("pppppppppppp_scan.pdf", handle.read())
+				_path, url = self._upload("pppppppppppp_scan.pdf", handle.read())
 
 		seen = self._progress_of([url])
 
@@ -532,7 +531,7 @@ class TestWhatTravelsToTheAgent(FrappeTestCase):
 		the reading carried on, the request went out, and an answer arrived for
 		a question the customer had withdrawn.
 		"""
-		path, url = self._upload("tttttttttttt_invoice.png", b"raw-image-bytes")
+		_path, url = self._upload("tttttttttttt_invoice.png", b"raw-image-bytes")
 		sent: dict = {"posted": False}
 
 		def capture(url, data=None, files=None, headers=None, **kwargs):

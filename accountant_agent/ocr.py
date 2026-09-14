@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -36,7 +35,8 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import Callable, Optional
+from collections.abc import Callable
+from typing import Optional
 
 import frappe
 
@@ -123,7 +123,7 @@ _TESSERACT_TIMEOUT_SECONDS: int = 90
 _MAX_OCR_PAGES: int = 50
 
 #: Told the filename, which page of it is being read, and how many there are.
-Progress = Optional[Callable[[str, int, int], None]]
+Progress = Callable[[str, int, int], None] | None
 
 
 # ─── What is worth reading ───────────────────────────────────────────────────
@@ -220,7 +220,7 @@ def _read_with_layout(image, page_layout: str, languages: str) -> tuple:
 	)
 
 	confidences = []
-	for word, confidence in zip(data.get("text", []), data.get("conf", [])):
+	for word, confidence in zip(data.get("text", []), data.get("conf", []), strict=False):
 		cleaned = (word or "").strip()
 		try:
 			score = float(confidence)
@@ -497,7 +497,7 @@ def pages_to_read(stored_path: str) -> int:
 	return len([n for n in _pages_needing_reading(pages) if n <= _MAX_OCR_PAGES])
 
 
-def reading_of(stored_path: str) -> Optional[str]:
+def reading_of(stored_path: str) -> str | None:
 	"""The words already read out of this upload, or None. Never reads anything.
 
 	None means "send the file itself": there is nothing to extract, or nobody
@@ -506,13 +506,13 @@ def reading_of(stored_path: str) -> Optional[str]:
 	if not os.path.exists(text_path(stored_path)):
 		return None
 	try:
-		with open(text_path(stored_path), "r", encoding="utf-8") as handle:
+		with open(text_path(stored_path), encoding="utf-8") as handle:
 			return handle.read() or None
 	except Exception:
 		return None
 
 
-def read_upload(stored_path: str, on_progress: Progress = None) -> Optional[str]:
+def read_upload(stored_path: str, on_progress: Progress = None) -> str | None:
 	"""Read one upload now, and remember the answer beside it.
 
 	Returns the text to send instead of the file, or None to send the file

@@ -30,6 +30,92 @@ function trigger_usage_load(frm) {
 	}
 }
 
+// Managed company knowledge. The PDF travels directly through the request and
+// is never saved as a Frappe File. Country/general reference libraries are
+// maintained by platform operators; this card owns only this company's policy.
+frappe.ui.form.on("Agent Settings", {
+	refresh(frm) {
+		if (!frm.is_new() && agent_email_of(frm)) render_company_knowledge(frm);
+	},
+});
+
+function company_knowledge_container(frm) {
+	let $found = $(frm.wrapper).find(".agent-company-knowledge");
+	if ($found.length) return $found;
+	let $container = $('<div class="agent-company-knowledge" style="margin: 18px 0;"></div>');
+	const anchor = frm.fields_dict.write_setup_html || frm.fields_dict.custom_instructions;
+	if (anchor && anchor.wrapper) $container.insertAfter($(anchor.wrapper));
+	else $container.appendTo($(frm.wrapper).find(".form-page").last());
+	return $container;
+}
+
+function render_company_knowledge(frm) {
+	const email = agent_email_of(frm);
+	const $box = company_knowledge_container(frm);
+	$box.html(`<div class="text-muted"><i class="fa fa-spinner fa-spin"></i> ${__('Loading company knowledge...')}</div>`);
+	frappe.call({
+		method: "accountant_agent.knowledge.get_company_knowledge",
+		args: { email },
+		callback(r) {
+			const data = r.message || {};
+			const company = (data.documents || []).find(item => item.scope === "company");
+			const title = company ? frappe.utils.escape_html(company.title || "") : __('No company policy uploaded');
+			$box.html(`
+				<div class="card" style="padding:18px;border:1px solid var(--border-color);border-radius:10px;">
+					<h4 style="margin-top:0">${__('Company accounting knowledge')}</h4>
+					<p class="text-muted">${__('Upload one searchable text PDF. Scanned/image PDFs are rejected. Uploading a new policy replaces the old one.')}</p>
+					<p><strong>${__('Current policy')}:</strong> ${title}</p>
+					<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+						<input class="form-control company-country" maxlength="2" style="width:75px;text-transform:uppercase" value="${frappe.utils.escape_html(data.country_code || 'EG')}" aria-label="${__('Country code')}">
+						<button class="btn btn-default save-company-country">${__('Save country')}</button>
+						<input type="file" class="company-policy-file" accept=".pdf,application/pdf" style="max-width:280px">
+						<button class="btn btn-primary upload-company-policy">${__('Upload policy PDF')}</button>
+						${company ? `<button class="btn btn-danger delete-company-policy" data-id="${frappe.utils.escape_html(company.document_id)}">${__('Delete policy')}</button>` : ''}
+					</div>
+				</div>`);
+			bind_company_knowledge_actions(frm, $box, email);
+		},
+	});
+}
+
+function bind_company_knowledge_actions(frm, $box, email) {
+	$box.find('.save-company-country').on('click', () => {
+		const code = ($box.find('.company-country').val() || '').trim().toUpperCase();
+		if (!/^[A-Z]{2}$/.test(code)) return frappe.msgprint(__('Use a two-letter country code, for example EG.'));
+		frappe.call({
+			method: "accountant_agent.knowledge.set_company_country",
+			args: { email, country_code: code },
+			callback: () => frappe.show_alert({ message: __('Country saved'), indicator: 'green' }),
+		});
+	});
+	$box.find('.upload-company-policy').on('click', async function() {
+		const file = $box.find('.company-policy-file')[0].files[0];
+		if (!file || !file.name.toLowerCase().endsWith('.pdf')) return frappe.msgprint(__('Choose a PDF first.'));
+		const form = new FormData();
+		form.append('email', email);
+		form.append('title', 'Company accounting policy');
+		form.append('file', file, file.name);
+		this.disabled = true;
+		try {
+			const response = await fetch('/api/method/accountant_agent.knowledge.upload_company_knowledge', {
+				method: 'POST', credentials: 'same-origin', body: form,
+				headers: { 'X-Frappe-CSRF-Token': frappe.csrf_token },
+			});
+			if (!response.ok) throw new Error(__('The PDF was not accepted. It must contain searchable text.'));
+			frappe.show_alert({ message: __('Company policy uploaded'), indicator: 'green' });
+			render_company_knowledge(frm);
+		} catch (error) { frappe.msgprint(error.message); }
+		finally { this.disabled = false; }
+	});
+	$box.find('.delete-company-policy').on('click', function() {
+		frappe.call({
+			method: "accountant_agent.knowledge.delete_company_knowledge",
+			args: { email, document_id: $(this).data('id') },
+			callback: () => render_company_knowledge(frm),
+		});
+	});
+}
+
 function get_usage_container(frm) {
 	if (frm.fields_dict.usage_html && frm.fields_dict.usage_html.wrapper) {
 		return $(frm.fields_dict.usage_html.wrapper);

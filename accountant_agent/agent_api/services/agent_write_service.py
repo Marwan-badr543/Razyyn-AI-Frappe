@@ -1858,10 +1858,10 @@ def _document_amount(doc: Any) -> float | None:
 
 def assert_not_an_unconfirmed_duplicate(
     digest: str,
-    run_id: Optional[str],
+    run_id: str | None,
     doctype: str,
     idempotency_key: str,
-    session_id: Optional[str],
+    session_id: str | None,
 ) -> None:
     """Refuse — exactly once — a create identical to another run's recent write.
 
@@ -2337,9 +2337,9 @@ def _run_one_write(
     entry: dict,
     payload: dict,
     key: str,
-    run_id: Optional[str],
-    session_id: Optional[str],
-    approved_by: Optional[str],
+    run_id: str | None,
+    session_id: str | None,
+    approved_by: str | None,
     savepoint_ordinal: int,
 ) -> dict:
     """Dispatch one entry of a batch to the action it asked for."""
@@ -2427,9 +2427,9 @@ def _with_references_resolved(value: Any, names: dict) -> Any:
 
 def create_documents_batch(
     documents: Sequence[dict],
-    run_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    approved_by: Optional[str] = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    approved_by: str | None = None,
 ) -> dict:
     """Create many documents in one transaction. Kept for callers that only create.
 
