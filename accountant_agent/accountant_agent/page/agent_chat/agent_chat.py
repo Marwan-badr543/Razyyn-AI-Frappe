@@ -28,16 +28,35 @@ from accountant_agent.agent_config import get_max_upload_files
 
 #: Messages of a conversation sent to the agent server with each turn.
 #:
-#: Every turn previously replayed the ENTIRE session. A long-running
-#: reconciliation thread therefore grew a payload that was re-serialised,
-#: re-transmitted and re-tokenised on every message, until the request was
-#: megabytes of history to carry one sentence of question. project_rules.md §3
-#: names this directly: never pass unbounded context to the model.
+#: Every turn once replayed the ENTIRE session. A long-running reconciliation
+#: thread therefore grew a payload that was re-serialised, re-transmitted and
+#: re-tokenised on every message, until the request was megabytes of history to
+#: carry one sentence of question. project_rules.md §3 names this directly:
+#: never pass unbounded context to the model.
 #:
-#: 50 rather than 40 because the manager on the agent server is now the ONLY
-#: reader of the transcript — the specialists receive a brief instead — and its
-#: planning quality is bounded by what it can see.
-MAX_HISTORY_MESSAGES: int = 50
+#: Capping the COUNT at 50 fixed that and caused the opposite complaint. This
+#: chat is the only durable copy of the conversation — the agent server keeps
+#: nothing beyond a five-hour working note — so whatever is not sent here is
+#: not merely out of context, it is gone. A customer referring to something
+#: agreed eight messages ago was talking to a manager for whom it never
+#: happened.
+#:
+#: So the bound is a SIZE now, as it is on the manager's side, with a generous
+#: count only as a backstop. One enormous stored report cannot inflate the
+#: request, and turns that fall outside the manager's own verbatim window are
+#: folded into its working note rather than dropped. Sending more here is what
+#: gives it something to fold.
+MAX_HISTORY_MESSAGES: int = 400
+
+#: Total transcript characters per request. Comfortably above the manager's own
+#: verbatim budget so there is always older material for it to compact, and far
+#: below anything a proxy would consider a large upload.
+MAX_HISTORY_CHARS: int = 400_000
+
+#: One stored message's share of that budget. A ledger export pasted into the
+#: transcript must not spend the whole conversation's allowance; the manager
+#: clips each turn again at its own, smaller limit anyway.
+MAX_HISTORY_CHARS_PER_MESSAGE: int = 20_000
 
 #: Messages returned to the browser when a chat is opened. The UI pages older
 #: messages in on demand rather than materialising an unbounded conversation.
@@ -744,13 +763,17 @@ def save_chat_event_if_not_duplicate(session_id: str, sender: str, content: str)
 
 
 def build_history_payload(session_id: str) -> str:
-	"""The recent conversation, as the JSON transcript the agent server expects.
+	"""The conversation so far, as the JSON transcript the agent server expects.
 
-	Bounded to the most recent MAX_HISTORY_MESSAGES turns. The rows are fetched
-	newest-first so the database applies the limit through the session index,
-	then reversed, because the agent needs them oldest-first — fetching ascending
-	and slicing in Python would read the whole conversation to discard the front
-	of it.
+	Bounded by SIZE, with a count only as a backstop. The rows are fetched
+	newest-first so the database applies the limit through the session index, and
+	the character budget is spent newest-first for the same reason: the turn that
+	resolves what the customer is referring to is far more often the last one
+	than the first. The result is reversed at the end because the agent reads a
+	conversation oldest-first.
+
+	Each message is clipped individually, so one pasted ledger cannot consume the
+	whole allowance and silence the twenty turns around it.
 
 	Never raises: a history that cannot be read must degrade the request to a
 	context-free one, not fail the customer's message outright.
@@ -773,17 +796,26 @@ def build_history_payload(session_id: str) -> str:
 		)
 		return ""
 
-	transcript = [
-		{
-			"role": "user" if row.sender == "human" else "assistant",
-			"content": _prose_only(row.content),
-		}
-		for row in reversed(recent)
-	]
-	return json.dumps(
-		[turn for turn in transcript if turn["content"]],
-		ensure_ascii=False,
-	)
+	transcript = []
+	spent = 0
+	for row in recent:
+		content = _prose_only(row.content)
+		if not content:
+			continue
+		if len(content) > MAX_HISTORY_CHARS_PER_MESSAGE:
+			content = content[:MAX_HISTORY_CHARS_PER_MESSAGE] + "..."
+		if transcript and spent + len(content) > MAX_HISTORY_CHARS:
+			break
+		spent += len(content)
+		transcript.append(
+			{
+				"role": "user" if row.sender == "human" else "assistant",
+				"content": content,
+			}
+		)
+
+	transcript.reverse()
+	return json.dumps(transcript, ensure_ascii=False)
 
 
 #: What the chat page hides in a stored message so its own widgets survive a
@@ -1060,6 +1092,17 @@ def send_message(
 	if not doc:
 		frappe.throw(_("Not authenticated with Razyyn."))
 
+	# Realtime is an acceleration path, not the source of truth.  Return the
+	# assistant row that existed before this turn so the browser can poll for a
+	# newer durable row if a websocket packet is lost (sleeping laptop, proxy
+	# reconnect, busy socket.io process, etc.).
+	previous_ai_message_name = frappe.db.get_value(
+		"Agent Chat History",
+		{"session_id": session_id, "sender": "ai"},
+		"name",
+		order_by="creation desc",
+	)
+
 	# Renewed here, in the request the customer is waiting on, rather than in
 	# the background worker: a session that cannot be renewed must be reported
 	# now, as a refusal they can act on, not as a failed message minutes later.
@@ -1146,7 +1189,12 @@ def send_message(
 		scan=_asked_for(scan),
 	)
 
-	return {"status": "queued", "session_id": session_id, "message_name": message_name}
+	return {
+		"status": "queued",
+		"session_id": session_id,
+		"message_name": message_name,
+		"previous_ai_message_name": previous_ai_message_name,
+	}
 
 
 def process_agent_message_background(
@@ -1188,7 +1236,14 @@ def process_agent_message_background(
 	# customer while this worker is mid-turn, and an uncaught DoesNotExistError
 	# here (outside every try below) would kill the worker silently -- no
 	# agent_message_error published, the client's bubble spins forever.
-	backend_session_id = frappe.db.get_value("Agent Chats", session_id, "backend_session_id") or session_id
+	# A rolling deployment can briefly run new Python against a site that has
+	# not migrated the new column yet.  A plain send does not need the rotated
+	# edit-thread id, so keep it working with the public session id instead of
+	# letting the RQ job die before its guarded request/publish block.  `migrate`
+	# remains the normal deployment path and restores edit isolation.
+	backend_session_id = session_id
+	if frappe.db.has_column("Agent Chats", "backend_session_id"):
+		backend_session_id = frappe.db.get_value("Agent Chats", session_id, "backend_session_id") or session_id
 
 	payload_data = {
 		"message": message,
@@ -1520,6 +1575,7 @@ def process_agent_message_background(
 				f.close()
 			except Exception:
 				pass
+		delete_agent_uploads(file_urls, user)
 
 
 def _readable_response(ai_response: str) -> tuple:
@@ -1957,6 +2013,41 @@ def get_chat_history(session_id: str, limit: int | None = None) -> list[dict]:
 
 
 @frappe.whitelist()
+def get_turn_result(session_id: str, previous_ai_message_name: str | None = None) -> dict:
+	"""Return a newly persisted assistant row for websocket-loss recovery.
+
+	The background worker commits chat history before publishing terminal
+	realtime events.  The client normally finishes instantly from that event;
+	this inexpensive query is its durable fallback when socket.io disconnects
+	or drops the packet.  Comparing row names avoids replaying an older answer.
+	"""
+	assert_owns_session(session_id)
+
+	latest = frappe.get_all(
+		"Agent Chat History",
+		filters={"session_id": session_id, "sender": "ai"},
+		fields=["name", "content", "creation1", "creation"],
+		order_by="creation desc",
+		limit=1,
+	)
+	if not latest or latest[0].name == previous_ai_message_name:
+		return {"status": "pending"}
+
+	row = latest[0]
+	content = row.content or ""
+	if content == "⚠️ **Cancelled**":
+		status = "cancelled"
+	elif content.startswith("⚠️ **Error:**"):
+		status = "error"
+	else:
+		status = "completed"
+	return {
+		"status": status,
+		"message": row,
+	}
+
+
+@frappe.whitelist()
 def disconnect_agent(agent_email: str | None = None) -> dict:
 	"""Disconnects the agent for the given email by clearing the access token locally."""
 	if not agent_email:
@@ -2183,6 +2274,8 @@ def _parse_json_list(value) -> list | None:
 # ─── Agent File Upload Endpoint ─────────────────────────────────────────────
 
 AGENT_UPLOAD_DIR: str = "agent_uploads"
+AGENT_UPLOAD_RETENTION_SECONDS: int = 5 * 60 * 60
+_AGENT_UPLOAD_CLEANUP_BATCH_SIZE: int = 500
 #: How long a single agent request may take, end to end.
 #:
 #: A customer can legitimately ask for something that runs for hours - a
@@ -2456,6 +2549,59 @@ def resolve_agent_upload_path(file_url: str, user: str) -> str | None:
 		legacy = frappe.get_site_path("public", "files", name)
 
 	return legacy if os.path.exists(legacy) else None
+
+
+def delete_agent_uploads(file_urls, user: str) -> int:
+	"""Delete this turn's owner-scoped uploads once forwarding has finished."""
+	root = os.path.realpath(_upload_root(user))
+	deleted = 0
+	for file_url in file_urls or []:
+		path = resolve_agent_upload_path(file_url, user)
+		if not path:
+			continue
+		resolved = os.path.realpath(path)
+		if os.path.dirname(resolved) != root:
+			continue
+		try:
+			os.unlink(resolved)
+			deleted += 1
+		except FileNotFoundError:
+			pass
+		except OSError as exc:
+			frappe.log_error(
+				title="Accountant Agent: upload cleanup",
+				message=f"Could not delete one completed upload: {exc}",
+			)
+	return deleted
+
+
+def cleanup_expired_agent_uploads() -> None:
+	"""Delete abandoned private chat uploads after the five-hour safety window."""
+	root = frappe.get_site_path("private", "files", AGENT_UPLOAD_DIR)
+	if not os.path.isdir(root):
+		return
+	cutoff = time.time() - AGENT_UPLOAD_RETENTION_SECONDS
+	deleted = 0
+	for owner_entry in os.scandir(root):
+		if deleted >= _AGENT_UPLOAD_CLEANUP_BATCH_SIZE:
+			break
+		if not owner_entry.is_dir(follow_symlinks=False):
+			continue
+		for entry in os.scandir(owner_entry.path):
+			if deleted >= _AGENT_UPLOAD_CLEANUP_BATCH_SIZE:
+				break
+			try:
+				old = entry.stat(follow_symlinks=False).st_mtime < cutoff
+				if entry.is_file(follow_symlinks=False) and old:
+					os.unlink(entry.path)
+					deleted += 1
+			except FileNotFoundError:
+				pass
+			except OSError as exc:
+				frappe.log_error(
+					title="Accountant Agent: orphan upload cleanup",
+					message=f"Could not delete one expired upload: {exc}",
+				)
 
 
 def _original_filename(stored_name: str) -> str:

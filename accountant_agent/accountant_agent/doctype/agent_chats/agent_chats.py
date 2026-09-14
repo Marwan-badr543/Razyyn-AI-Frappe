@@ -19,4 +19,4 @@ class AgentChats(Document):
 		turns forward -- while this chat's identity (`session_id`, its rows
 		in Agent Chat History, its place in the sidebar) never changes.
 		"""
-		return self.backend_session_id or self.session_id
+		return self.get("backend_session_id") or self.get("session_id") or self.name

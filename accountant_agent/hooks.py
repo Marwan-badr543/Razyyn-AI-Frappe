@@ -161,6 +161,11 @@ after_migrate = "accountant_agent.install.after_migrate"
 # ---------------
 
 scheduler_events = {
+	"cron": {
+		"*/15 * * * *": [
+			"accountant_agent.accountant_agent.page.agent_chat.agent_chat.cleanup_expired_agent_uploads"
+		]
+	},
 	"hourly": [
 		"accountant_agent.agent_api.services.agent_api_service.cleanup_old_files"
 	],
@@ -253,4 +258,3 @@ scheduler_events = {
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-

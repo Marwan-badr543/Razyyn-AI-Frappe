@@ -397,6 +397,7 @@ class AccountantAgentChat {
 
 		frappe.realtime.on("agent_message_done", async (data) => {
 			if (data && data.session_id) {
+				this.message_handler.stop_result_recovery(data.session_id);
 				if (this.message_handler.cancelled_sessions.has(data.session_id)) {
 					this.message_handler.cancelled_sessions.delete(data.session_id);
 					return;
@@ -447,6 +448,7 @@ class AccountantAgentChat {
 
 		frappe.realtime.on("agent_message_error", async (data) => {
 			if (data && data.session_id) {
+				this.message_handler.stop_result_recovery(data.session_id);
 				if (this.message_handler.cancelled_sessions.has(data.session_id)) {
 					this.message_handler.cancelled_sessions.delete(data.session_id);
 					return;
@@ -479,6 +481,7 @@ class AccountantAgentChat {
 
 		frappe.realtime.on("agent_message_cancelled", async (data) => {
 			if (data && data.session_id) {
+				this.message_handler.stop_result_recovery(data.session_id);
 				this.message_handler.cancelled_sessions.delete(data.session_id);
 				this.stop_stream_timer(data.session_id);
 				let active_session_id = this.session_manager.session_id;
@@ -1126,4 +1129,3 @@ class AccountantAgentChat {
 		`).css('display', 'flex');
 	}
 }
-

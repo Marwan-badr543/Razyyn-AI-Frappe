@@ -747,22 +747,72 @@
 	position: relative;
 }
 
-/* Edit control on the customer's own messages: same hover-reveal, same
-   icon-button chrome as the sidebar's rename/delete row (.chat-action-btn) --
-   one hover-actions idiom for the whole app, not a second one invented here. */
+/* Message action buttons (Copy / Edit) - Fixed underneath messages without layout shift */
 .agent-msg-actions {
-	display: none;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	margin-top: 4px;
+	padding: 0 2px;
+}
+
+.agent-msg-row.user .agent-msg-actions,
+.agent-msg-row.human .agent-msg-actions {
 	justify-content: flex-end;
+}
+
+.agent-msg-row.ai .agent-msg-actions {
+	justify-content: flex-start;
 	margin-top: 6px;
 }
 
-.agent-msg-row.user:hover .agent-msg-actions,
-.agent-msg-row.human:hover .agent-msg-actions {
-	display: flex;
+.agent-msg-row.editing .agent-msg-actions {
+	display: none !important;
 }
 
-.agent-msg-row.editing .agent-msg-actions {
-	display: none;
+.agent-msg-actions .chat-action-btn {
+	background: transparent;
+	border: 1px solid transparent;
+	color: #334155; /* Dark slate (high contrast, crisp) */
+	cursor: pointer;
+	padding: 4px;
+	width: 26px;
+	height: 26px;
+	border-radius: 6px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	transition: all 0.15s ease;
+	line-height: 1;
+}
+
+.agent-msg-actions .chat-action-btn svg {
+	display: block;
+	flex-shrink: 0;
+}
+
+.agent-msg-actions .chat-action-btn:hover {
+	color: #0f172a;
+	background-color: var(--bg-raised, rgba(0, 0, 0, 0.06));
+	border-color: var(--border-color, rgba(0, 0, 0, 0.12));
+}
+
+.agent-msg-actions .chat-action-btn.copy-msg-btn.copied {
+	color: #10b981 !important;
+	border-color: #10b981;
+	background-color: rgba(16, 185, 129, 0.1);
+}
+
+[data-theme="dark"] .agent-msg-actions .chat-action-btn,
+body[data-theme="dark"] .agent-msg-actions .chat-action-btn {
+	color: #cbd5e1;
+}
+
+[data-theme="dark"] .agent-msg-actions .chat-action-btn:hover,
+body[data-theme="dark"] .agent-msg-actions .chat-action-btn:hover {
+	color: #ffffff;
+	background-color: rgba(255, 255, 255, 0.1);
+	border-color: rgba(255, 255, 255, 0.2);
 }
 
 .agent-msg-edit-box {
@@ -862,12 +912,105 @@
 /* Responsive scroll wrapper around tables */
 .agent-table-wrapper {
 	width: 100%;
-	overflow-x: auto;
-	margin: 20px 0;
+	margin: 18px 0;
 	border: 1px solid var(--border-color);
 	border-radius: 8px;
 	box-shadow: var(--shadow-sm);
 	background: var(--bg-panel);
+	overflow: hidden;
+}
+
+.agent-table-toolbar {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	padding: 8px 12px;
+	background-color: var(--bg-raised);
+	border-bottom: 1px solid var(--border-color);
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.agent-table-toolbar-left {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 12px;
+	color: var(--text-muted);
+	font-weight: 500;
+}
+
+.agent-table-tag {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	color: var(--chat-primary);
+	font-weight: 600;
+}
+
+.agent-table-row-count {
+	background: var(--color-accent-light);
+	color: var(--chat-primary);
+	padding: 2px 7px;
+	border-radius: 12px;
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.agent-table-toolbar-right {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-left: auto;
+}
+
+.agent-table-action-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 4px 9px;
+	border-radius: 6px;
+	font-size: 12px;
+	font-weight: 500;
+	border: 1px solid var(--border-color);
+	background-color: var(--bg-panel);
+	color: var(--text-primary);
+	cursor: pointer;
+	transition: all 0.15s ease;
+	line-height: 1.4;
+}
+
+.agent-table-action-btn:hover {
+	background-color: var(--bg-raised);
+	border-color: var(--chat-primary);
+	color: var(--chat-primary);
+	transform: translateY(-1px);
+	box-shadow: var(--shadow-sm);
+}
+
+.agent-table-action-btn:active {
+	transform: translateY(0);
+}
+
+.agent-table-action-btn.btn-table-excel:hover {
+	border-color: #107c41;
+	color: #107c41;
+}
+
+.agent-table-action-btn.btn-table-pdf:hover {
+	border-color: #e11d48;
+	color: #e11d48;
+}
+
+.agent-table-action-btn.btn-table-copy.copied {
+	background-color: var(--color-success-light);
+	border-color: var(--color-success);
+	color: var(--color-success);
+}
+
+.agent-table-scroll-container {
+	width: 100%;
+	overflow-x: auto;
 }
 
 .agent-msg-bubble table {
