@@ -323,7 +323,11 @@ def _exchange_refresh_token(settings_name: str, email: str) -> tuple:
 	again, which covers a reply lost in transit — but not a reply we threw away.
 	"""
 	if not _warn_if_refresh_token_cannot_be_stored():
-		return (REFUSED, None)
+		# An un-migrated site is a deployment fault, not an ended session --
+		# signing in again cannot fix it, since the new refresh token still
+		# could not be persisted. Report it as transient/unreachable instead
+		# of the unbreakable "sign in again" loop this used to cause.
+		return (UNREACHABLE, None)
 
 	refresh_token = _stored_secret(settings_name, "refresh_token")
 	if not refresh_token:
