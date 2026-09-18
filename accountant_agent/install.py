@@ -84,11 +84,49 @@ def provision_agent_access() -> None:
     ensure_app_owned_permissions()
     ensure_agent_user()
     ensure_write_policy()
+    ensure_write_log_actions()
     ensure_workspace_shortcut()
     ensure_api_key_fingerprints()
     frappe.db.commit()
     frappe.logger("accountant_agent").info(
         "Accountant Agent access provisioned (user=%s, role=%s).", AGENT_USER, AGENT_ROLE
+    )
+
+
+def ensure_write_log_actions() -> None:
+    """Teach the audit log every action the write service knows.
+
+    The Agent Write Log's ``action`` field is a Select, so its option list is a
+    second copy of ``agent_write_service.ACTIONS`` that lives in a DocType JSON.
+    When the code learned "update" and the JSON did not, every update ran to
+    completion inside the service and was then refused by the audit row it had
+    to write — and because the refusal came from the ERP, the customer was told
+    their own system does not accept updates. Nothing was wrong with their
+    system.
+
+    So the list is written from the code rather than maintained beside it. Every
+    migrate makes the Select match ``ACTIONS``, and the next action added to the
+    service reaches the audit log in the same commit.
+    """
+    if not frappe.db.exists("DocType", "Agent Write Log"):
+        return
+
+    from accountant_agent.agent_api.services.agent_write_service import ACTIONS
+
+    wanted = "\n".join(ACTIONS)
+    field = frappe.db.get_value(
+        "DocField",
+        {"parent": "Agent Write Log", "fieldname": "action"},
+        ["name", "options"],
+        as_dict=True,
+    )
+    if not field or field.options == wanted:
+        return
+
+    frappe.db.set_value("DocField", field.name, "options", wanted, update_modified=False)
+    frappe.clear_cache(doctype="Agent Write Log")
+    frappe.logger("accountant_agent").info(
+        "Agent Write Log actions set to %s (was %s).", ACTIONS, field.options
     )
 
 
@@ -391,6 +429,7 @@ def _writable_doctypes() -> list[dict[str, object]]:
         frappe.set_user(AGENT_USER)
         for row in policy.allowed_document_types or []:
             has_create = frappe.has_permission(row.document_type, "create")
+            has_update = frappe.has_permission(row.document_type, "write")
             has_submit = frappe.has_permission(row.document_type, "submit")
             has_cancel = frappe.has_permission(row.document_type, "cancel")
             has_amend = frappe.has_permission(row.document_type, "amend")
@@ -398,6 +437,10 @@ def _writable_doctypes() -> list[dict[str, object]]:
                 {
                     "doctype": row.document_type,
                     "create": bool(row.allow_create and has_create),
+                    # getattr, because a site carrying this app from before the
+                    # field existed has rows without it — and a missing grant
+                    # reads as "not permitted", never as an exception.
+                    "update": bool(getattr(row, "allow_update", 0) and has_update),
                     "submit": bool(row.allow_submit and has_submit),
                     "cancel": bool(row.allow_cancel and has_cancel),
                     "amend": bool(row.allow_amend and has_amend),

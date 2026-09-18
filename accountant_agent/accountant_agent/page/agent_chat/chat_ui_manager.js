@@ -15,6 +15,58 @@ class ChatUIManager {
 		//: check alone let auto-scroll fight a user trying to read upward
 		//: while a reply is still coming in.
 		this.user_pinned_to_bottom = true;
+		//: The newest drawing of each live region, waiting for the next
+		//: animation frame. See _schedule_draw.
+		this.pending_draws = new Map();
+		this.draw_frame = null;
+	}
+
+	// ─── One drawing per frame, not one per event ────────────────────────
+	//
+	// WHY THE CHAT USED TO STOP RESPONDING DURING A LONG ANSWER.
+	//
+	// The agent's answer and its reasoning arrive as hundreds or thousands
+	// of small pieces, and each piece used to redraw the WHOLE of what had
+	// arrived so far: parse all of it as Markdown, sanitise all of it,
+	// replace the element, then measure the page to decide about scrolling.
+	// The cost of one piece therefore grew with the length of the answer,
+	// and the cost of the answer grew with the SQUARE of its length. A long
+	// audit — tens of thousands of words, most of it working notes — spent
+	// minutes of processor time redrawing text that had already been drawn,
+	// and the browser, unable to do anything else in the meantime, offered
+	// to close the page.
+	//
+	// A screen refreshes about sixty times a second, so a drawing that
+	// happens more often than that is thrown away unseen. This keeps only
+	// the NEWEST drawing of each region and performs it once per refresh.
+	// Nothing is lost — the text itself is accumulated as it arrives, by
+	// the caller — and the cost of an answer becomes proportional to how
+	// long it takes rather than to the square of its length.
+	_schedule_draw(key, draw) {
+		this.pending_draws.set(key, draw);
+		if (this.draw_frame !== null) return;
+		this.draw_frame = requestAnimationFrame(() => {
+			this.draw_frame = null;
+			let due = this.pending_draws;
+			this.pending_draws = new Map();
+			due.forEach((run) => {
+				try {
+					run();
+				} catch (e) {
+					console.error("Chat draw failed:", e);
+				}
+			});
+		});
+	}
+
+	// A bubble that has been finalised must not be overwritten a frame
+	// later by the last unfinished drawing of the same bubble. Keyed by
+	// bubble, so finishing one conversation never drops another's.
+	_cancel_draws(bubble_id) {
+		if (!bubble_id) return;
+		[...this.pending_draws.keys()].forEach((key) => {
+			if (key.indexOf(bubble_id + ":") === 0) this.pending_draws.delete(key);
+		});
 	}
 
 	clear_typing_timers() {
@@ -156,6 +208,22 @@ class ChatUIManager {
 
 			let plan_text = data.plan || "";
 			let status = data.status || "pending";
+			// A CARD THE CUSTOMER MUST READ OPENS OPEN. A proposed plan is a
+			// summary they can glance past, so it stays folded. A message
+			// waiting to be sent is the opposite: the recipient, the wording
+			// and the files are the whole reason they are being asked, and a
+			// card they have to click before they can see any of it is an
+			// approval they will give without looking.
+			let starts_open = data.expanded === true;
+			// THE CARD NAMES WHAT IT IS ASKING FOR. "Proposed Execution Plan"
+			// and "Approve & Run" are right for a plan of work and wrong for a
+			// message about to leave — the customer has to know they are
+			// approving a send, not a piece of work. The server supplies both
+			// words, already in their language; the defaults are what a plan
+			// has always said.
+			let card_title = data.title || __("Proposed Execution Plan");
+			let approve_label = data.approve_label || __("Approve & Run");
+			let approve_reply = data.approve_reply || "Approve";
 			let parsed_markdown = this.parse_markdown(plan_text);
 
 			let header_id = `plan-hdr-${this.chat.generate_uuid()}`;
@@ -169,18 +237,18 @@ class ChatUIManager {
 					<div class="plan-actions-wrapper">
 						<button class="plan-btn-approve" id="${btn_id}">
 							<i class="fa fa-play"></i>
-							<span>${__("Approve & Run")}</span>
+							<span>${frappe.utils.escape_html(approve_label)}</span>
 						</button>
 					</div>
 				`;
 			}
 
 			let plan_html = `
-				<div class="plan-card-container collapsed" id="${container_id}">
+				<div class="plan-card-container${starts_open ? "" : " collapsed"}" id="${container_id}">
 					<div class="plan-card-header" id="${header_id}">
 						<div class="plan-title-wrapper">
 							<i class="fa fa-list-alt" style="color: var(--chat-primary);"></i>
-							<span>${__("Proposed Execution Plan")}</span>
+							<span>${frappe.utils.escape_html(card_title)}</span>
 						</div>
 						<i class="fa fa-chevron-down plan-caret-icon"></i>
 					</div>
@@ -219,7 +287,7 @@ class ChatUIManager {
 					btn.find("i").removeClass("fa-play").addClass("fa-spinner fa-spin");
 
 					// Send "Approve" message to resume the agent
-					this.chat.message_handler.send_chat_message("Approve");
+					this.chat.message_handler.send_chat_message(approve_reply);
 				});
 			}
 
@@ -816,7 +884,7 @@ class ChatUIManager {
 		let wrapper = bubble_el.length ? bubble_el.find(".agent-todo-wrapper") : $();
 		if (!wrapper.length) {
 			// No live bubble to draw into (a resumed turn whose events arrived
-			// first): the checklist still gets shown, on its own row.
+			// first): the checklist is drawn into the transcript instead.
 			this.render_todo_standalone(msg_box, todo);
 			return;
 		}
@@ -851,12 +919,35 @@ class ChatUIManager {
 		}
 	}
 
-	// The reload path: no stream bubble exists, so the checklist of a run that
-	// is still active or paused gets its own row at the end of the transcript.
+	// The reload path: no live stream bubble exists, so the checklist is drawn
+	// into the transcript directly.
+	//
+	// IT GOES WHERE IT ALWAYS GOES: FIRST, INSIDE THE NEWEST THING THE AGENT
+	// SAID. That is where create_stream_bubble puts it while a run is live and
+	// where render_plan_card keeps it when a plan lands, so a rebuilt page
+	// must not put it somewhere else. Appending it as a row of its own at the
+	// very end left the checklist UNDER the plan card it belongs to, so the
+	// customer read the approval before the list of work it was part of.
+	// A row of its own is the fallback for a transcript with nothing from the
+	// agent in it yet.
 	render_todo_standalone(msg_box, todo) {
 		let html = this._todo_panel_html(todo);
 		if (!html) return;
-		msg_box.find(".agent-todo-standalone").remove();
+		this.clear_todo_panels(msg_box);
+
+		let $bubble = msg_box.find(".agent-msg-row.ai").last().find(".agent-msg-bubble").first();
+		if ($bubble.length) {
+			let $wrapper = $bubble.find(".agent-todo-wrapper").first();
+			if (!$wrapper.length) {
+				$bubble.prepend('<div class="agent-todo-wrapper"></div>');
+				$wrapper = $bubble.find(".agent-todo-wrapper").first();
+			}
+			$wrapper.html(html).show();
+			this._bind_todo_events($wrapper);
+			this.force_scroll_to_bottom(msg_box);
+			return;
+		}
+
 		let $row = $(`
 			<div class="agent-msg-row ai agent-todo-standalone">
 				<div class="agent-msg-bubble" style="max-width: 100%;">
@@ -871,16 +962,16 @@ class ChatUIManager {
 
 	update_stream_bubble(msg_box, bubble_id, content) {
 		this.hide_typing_indicator(msg_box);
-		let bubble_el = msg_box.find(`#${bubble_id}`);
-		if (bubble_el.length) {
+		this._schedule_draw(`${bubble_id}:answer`, () => {
+			let bubble_el = msg_box.find(`#${bubble_id}`);
+			if (!bubble_el.length) return;
 			let text_el = bubble_el.find(".agent-msg-text-content");
 			let msg_box_was_near_bottom = this.is_near_bottom(msg_box);
-			let parsed = this.parse_markdown(content);
-			text_el.html(parsed);
+			text_el.html(this.parse_markdown(content));
 			if (msg_box_was_near_bottom) {
 				this.force_scroll_to_bottom(msg_box);
 			}
-		}
+		});
 	}
 
 	// `stream` is the whole active_streams entry (optional — callers that
@@ -888,8 +979,9 @@ class ChatUIManager {
 	// nesting, so nothing on a slow-to-update caller breaks silently).
 	update_stream_status(msg_box, bubble_id, status_text, steps = [], stream = null) {
 		this.hide_typing_indicator(msg_box);
-		let bubble_el = msg_box.find(`#${bubble_id}`);
-		if (bubble_el.length) {
+		this._schedule_draw(`${bubble_id}:steps`, () => {
+			let bubble_el = msg_box.find(`#${bubble_id}`);
+			if (!bubble_el.length) return;
 			let steps_list = bubble_el.find(".thinking-steps-list");
 			let msg_box_was_near_bottom = this.is_near_bottom(msg_box);
 			steps_list.empty();
@@ -960,13 +1052,14 @@ class ChatUIManager {
 			if (msg_box_was_near_bottom) {
 				this.force_scroll_to_bottom(msg_box);
 			}
-		}
+		});
 	}
 
 	update_stream_reasoning(msg_box, bubble_id, reasoning_text) {
 		this.hide_typing_indicator(msg_box);
-		let bubble_el = msg_box.find(`#${bubble_id}`);
-		if (bubble_el.length) {
+		this._schedule_draw(`${bubble_id}:reasoning`, () => {
+			let bubble_el = msg_box.find(`#${bubble_id}`);
+			if (!bubble_el.length) return;
 			let reasoning_block = bubble_el.find(".thinking-reasoning-block");
 			let body_content = bubble_el.find(".thinking-body-content");
 
@@ -983,7 +1076,7 @@ class ChatUIManager {
 			if (msg_box_was_near_bottom) {
 				this.force_scroll_to_bottom(msg_box);
 			}
-		}
+		});
 	}
 
 	update_thinking_duration(msg_box, bubble_id, seconds) {
@@ -998,6 +1091,9 @@ class ChatUIManager {
 	// breakdown is worth leaving open.
 	finalize_stream_bubble(msg_box, bubble_id, content, datetime, header_title, stream = null) {
 		this.hide_typing_indicator(msg_box);
+		// The finished answer is the last word on this bubble: an unfinished
+		// drawing still waiting for the next frame must not land on top of it.
+		this._cancel_draws(bubble_id);
 		let bubble_el = msg_box.find(`#${bubble_id}`);
 		let row_el = msg_box.find(`#row-${bubble_id}`);
 		if (bubble_el.length) {

@@ -49,6 +49,7 @@ from accountant_agent.agent_api.services.agent_write_service import (
     amend_existing_document,
     assert_session_is_agent_user,
     build_document_spec,
+    read_document_state,
     cancel_existing_document,
     create_document,
     create_documents_batch,
@@ -129,6 +130,35 @@ def get_document_spec(doctype: str | None = None) -> dict:
         return _error(exc)
     except Exception:
         return _unexpected("get_document_spec")
+
+
+@frappe.whitelist()
+def get_document(doctype: str | None = None, docname: str | None = None) -> dict:
+    """ONE document, addressed by its own reference, or nothing.
+
+    WHY A SEARCH IS NOT THIS. `search_documents` widens what it is given so
+    that somebody who half-remembered a name still finds their paperwork, and
+    it returns the ten most recent matches. Both are right for offering a
+    person a choice and wrong for looking a reference up: "SINV-1" widens to
+    everything from SINV-1 to SINV-199, the ten newest come back, and the
+    oldest — the one that was actually named — is not among them. The caller
+    then reports, with complete confidence, that the document does not exist.
+
+    Read-only and permission-bounded: `get_document_state` reads as the agent
+    user and checks read permission on the document itself, so one this agent
+    may not see is honestly absent rather than quietly returned.
+    """
+    try:
+        assert_session_is_agent_user()
+        found = read_document_state(
+            doctype or frappe.form_dict.get("doctype"),
+            docname or frappe.form_dict.get("docname"),
+        )
+        return {"document": found}
+    except AgentWriteError as exc:
+        return _error(exc)
+    except Exception:
+        return _unexpected("get_document")
 
 
 @frappe.whitelist()

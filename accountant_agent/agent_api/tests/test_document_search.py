@@ -50,18 +50,33 @@ from accountant_agent.agent_api.services.agent_write_service import (
 
 
 class _Field:
-    def __init__(self, fieldname: str) -> None:
+    def __init__(self, fieldname: str, fieldtype: str = "Data") -> None:
         self.fieldname = fieldname
+        # WHICH COLUMNS MAY BE SEARCHED IS DECIDED BY TYPE. A description or a
+        # remark is prose, and matching a person's words against a paragraph
+        # turns a narrow search into every record anybody wrote a note on — so
+        # the double has to carry a type or the exclusion is never exercised.
+        self.fieldtype = fieldtype
+
+
+#: Field types that are prose rather than a name, as the service reads them.
+_PROSE = {"user_remark": "Small Text", "description": "Text Editor"}
 
 
 class _Meta:
     """Just enough DocType meta for the field intersection under test."""
 
-    def __init__(self, fieldnames, *, submittable=1, istable=0, issingle=0) -> None:
-        self.fields = [_Field(f) for f in fieldnames]
+    def __init__(self, fieldnames, *, submittable=1, istable=0, issingle=0,
+                 title_field="", search_fields="") -> None:
+        self.fields = [_Field(f, _PROSE.get(f, "Data")) for f in fieldnames]
         self.is_submittable = submittable
         self.istable = istable
         self.issingle = issingle
+        # A DOCUMENT TYPE SAYS WHICH OF ITS COLUMNS A PERSON WOULD SEARCH BY.
+        # Both are read now, because a fixed list left an item findable only by
+        # the code its system generated for it.
+        self.title_field = title_field
+        self.search_fields = search_fields
 
 
 _INVOICE_FIELDS = ("posting_date", "company", "status", "customer", "customer_name",
@@ -110,11 +125,15 @@ class _Bench:
         if or_filters:
             pattern = str(or_filters[0][2]).strip("%").casefold()
             tokens = [t for t in pattern.split("%") if t]
+            # THE COLUMNS THE QUERY ACTUALLY NAMED, not a list kept here. A
+            # double that matches its own fixed set answers the same way
+            # whatever the service asked for — which is exactly the defect the
+            # service had, reproduced in the thing meant to catch it.
+            searched = [clause[0] for clause in or_filters]
             rows = [
                 r for r in rows
                 if all(
-                    any(tok in str(r.get(f, "")).casefold() for f in
-                        ("name", "customer_name", "customer", "title"))
+                    any(tok in str(r.get(f, "")).casefold() for f in searched)
                     for tok in tokens
                 )
             ]
@@ -326,6 +345,32 @@ class TestFindingTheRightDocument(unittest.TestCase):
         with _world(metas=metas) as bench:
             search_documents(["Item"], company="Marwan Co")
         self.assertEqual(bench.queries[0]["filters"], [])
+
+    def test_a_record_is_searched_by_the_name_its_users_call_it(self):
+        """A client asked for "the laptop". Their system files that item under
+        SKU002 and shows it as "Laptop" — and the search matched a fixed list of
+        column names that has never heard of `item_name`, so the answer was that
+        they have no such record. The document type says which of its columns a
+        person would search by; it is asked."""
+        metas = {"Item": _Meta(
+            ("item_code", "item_name", "item_group", "description"),
+            submittable=0, title_field="item_name",
+            search_fields="item_name,description,item_group",
+        )}
+        rows = {"Item": [{"name": "SKU002", "docstatus": 0,
+                          "modified": "2026-09-01 09:00:00",
+                          "item_name": "Laptop"}]}
+        with _world(metas=metas, rows=rows) as bench:
+            result = search_documents(["Item"], text="Laptop")
+
+        searched = [clause[0] for clause in bench.queries[0]["or_filters"]]
+        self.assertIn("item_name", searched)
+        self.assertIn("item_group", searched)
+        self.assertEqual(searched[0], "name", "its own reference comes first")
+        # Prose is never searched: matching a person's words against a
+        # description turns a narrow search into everything anybody annotated.
+        self.assertNotIn("description", searched)
+        self.assertEqual([d["docname"] for d in result["documents"]], ["SKU002"])
 
 
 class TestWhatComesBack(unittest.TestCase):

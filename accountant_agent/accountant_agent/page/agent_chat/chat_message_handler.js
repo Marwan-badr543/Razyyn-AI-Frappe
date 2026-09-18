@@ -122,6 +122,8 @@ class ChatMessageHandler {
 		// The switch as it stands NOW decides what travels — not whether a
 		// reading happens to have been done earlier.
 		let scan = !!(this.chat.file_upload_handler && this.chat.file_upload_handler.scan_enabled);
+		// Same rule as scan: the switch as it stands NOW decides.
+		let high_thinking = !!(this.chat.file_upload_handler && this.chat.file_upload_handler.high_thinking_enabled);
 
 		if (has_attachments) {
 			file_urls = this.chat.file_upload_handler.get_file_urls();
@@ -138,10 +140,10 @@ class ChatMessageHandler {
 		}
 
 		let full_message = attachment_markers + (message || "");
-		await this.send_chat_message(full_message.trim(), file_urls, scan);
+		await this.send_chat_message(full_message.trim(), file_urls, scan, high_thinking);
 	}
 
-	async send_chat_message(message, file_urls = null, scan = false) {
+	async send_chat_message(message, file_urls = null, scan = false, high_thinking = false) {
 		let session_id = this.chat.session_manager.session_id;
 		if (!session_id) return;
 
@@ -222,6 +224,7 @@ class ChatMessageHandler {
 				agent_type: agent_type,
 				file_urls: file_urls ? JSON.stringify(file_urls) : null,
 				scan: scan ? 1 : 0,
+				high_thinking: high_thinking ? 1 : 0,
 			}
 		);
 
@@ -393,6 +396,11 @@ class ChatMessageHandler {
 					params
 				);
 				failures = 0;
+				// The answer may have arrived over the socket while this call was
+				// in flight — the worker commits the transcript BEFORE it announces
+				// it, so both paths routinely land together. Whoever was stopped
+				// stays stopped; two rebuilds of one transcript draw it twice.
+				if (stopped || this.recovery_pollers[session_id] !== poller) return;
 				if (result && result.status !== "pending") {
 					this.stop_result_recovery(session_id);
 					this.chat.stop_stream_timer(session_id);

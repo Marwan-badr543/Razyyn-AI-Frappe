@@ -27,6 +27,7 @@ from accountant_agent.agent_api.db.agent_api_repository import (
 	find_settings_name_by_api_key,
 	get_chat_session_owner,
 	get_doctype_metadata,
+	get_table_columns,
 	get_settings_owner,
 	insert_chat_history_record,
 	update_chat_last_timestamp,
@@ -459,6 +460,23 @@ def build_doctype_schema_summary(doctype: str) -> dict:
 
 	meta = get_doctype_metadata(doctype)
 
+	# THE COLUMNS THIS TABLE REALLY HAS, asked of the database itself.
+	#
+	# A DocType declares more fields than it stores. Buttons are fields with no
+	# column at all; a field marked `is_virtual` is computed in Python and
+	# never written. On a stock Sales Invoice that is three names — including
+	# `last_scanned_warehouse` — advertised to the agent as columns it can
+	# select, and it cannot tell which of the names it was GIVEN are real. It
+	# looks the schema up first, exactly as instructed, writes a query, and
+	# gets "Unknown column"; its only recourse is to try another name and be
+	# refused again.
+	#
+	# Filtering on fieldtype alone was the previous approach and it is the
+	# reason this went unnoticed: it removed the layout breaks and left the
+	# Buttons. Asking the database removes the whole class of mistake rather
+	# than the instances of it somebody thought to list.
+	real_columns = set(get_table_columns(doctype))
+
 	fields_summary: list[str] = [
 		"name (Data/Primary Key)",
 		"docstatus (Int: 0=Draft, 1=Submitted, 2=Cancelled)",
@@ -466,6 +484,8 @@ def build_doctype_schema_summary(doctype: str) -> dict:
 
 	for df in meta.fields:
 		if df.fieldtype in _IGNORED_FIELD_TYPES:
+			continue
+		if df.fieldname not in real_columns:
 			continue
 
 		info = f"{df.fieldname} ({df.fieldtype})"
@@ -496,6 +516,26 @@ def build_doctype_schema_summary(doctype: str) -> dict:
 		# every row sits at 0, so the same constraint would return nothing.
 		# The caller cannot tell the two apart from the field list alone.
 		"is_submittable": bool(getattr(meta, "is_submittable", 0)),
+		# THE FILTER ITSELF, not only the flag it is derived from.
+		#
+		# `is_submittable` is a fact about this DocType; `posted_filter` is an
+		# instruction the agent can put straight into a WHERE clause, and it is
+		# the SITE that owns the spelling. That matters because this app is no
+		# longer the only implementation of this endpoint: the Odoo module
+		# answers the same call, and there "posted" is `state = 'posted'` on one
+		# model and `state = 'sale'` on another. An agent that has to infer the
+		# predicate from a boolean has to know which ERP it is talking to in
+		# order to guess the column — which is exactly the knowledge the ERP
+		# port exists to keep out of the agent.
+		#
+		# Absent, not empty, when the DocType is never submitted: every row of a
+		# Customer or an Item is real, and constraining docstatus on one returns
+		# nothing at all.
+		**(
+			{"posted_filter": "docstatus = 1"}
+			if getattr(meta, "is_submittable", 0)
+			else {}
+		),
 		"fields": fields_summary,
 	}
 

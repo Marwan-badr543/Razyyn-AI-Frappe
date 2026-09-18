@@ -816,6 +816,9 @@ def build_history_payload(session_id: str) -> str:
 
 	transcript.reverse()
 	return json.dumps(transcript, ensure_ascii=False)
+# --- SHARED WITH THE ODOO MODULE (razyyn_ai/services/transcript.py).
+# --- tools/sync_from_frappe.py copies this block VERBATIM. Keep it pure:
+# --- stdlib and _() only, nothing from frappe.  BEGIN transcript-markup
 
 
 #: What the chat page hides in a stored message so its own widgets survive a
@@ -958,6 +961,7 @@ def _prose_only(content: str) -> str:
 	# string early, so the parse above fails and the customer's turn is handed
 	# over raw.
 	return unescape(_CARRIED_MARKUP.sub("", text).strip())
+# --- END transcript-markup
 
 
 def update_chat_timestamp(session_id: str) -> None:
@@ -1083,6 +1087,7 @@ def send_message(
 	agent_type: str = "auto",
 	file_urls: list[str] | str | None = None,
 	scan: bool | str = False,
+	high_thinking: bool | str = False,
 ) -> dict:
 	"""Proxy message send to agent by enqueuing a background worker to handle streaming."""
 	user = _assert_signed_in()
@@ -1187,6 +1192,7 @@ def send_message(
 		file_urls=parsed_file_urls,
 		user=user,
 		scan=_asked_for(scan),
+		high_thinking=_asked_for(high_thinking),
 	)
 
 	return {
@@ -1205,6 +1211,7 @@ def process_agent_message_background(
 	file_urls: list,
 	user: str,
 	scan: bool = False,
+	high_thinking: bool = False,
 ) -> None:
 	"""Runs agent chat execution in a background worker task and streams progress to client."""
 	frappe.set_user(user)
@@ -1253,6 +1260,9 @@ def process_agent_message_background(
 		"erp_system": "ERPNext",
 		"stream": "true",
 		"selected_agent": agent_type or "auto",
+		# The customer's High Thinking switch: on, the platform routes the
+		# question to its consultant team. Off is the default and costs nothing.
+		"high_thinking": "true" if high_thinking else "false",
 	}
 
 	# Bound before the try: the `finally` below closes them, and it runs even if
@@ -1578,6 +1588,9 @@ def process_agent_message_background(
 		delete_agent_uploads(file_urls, user)
 
 
+# --- SHARED WITH THE ODOO MODULE (razyyn_ai/services/transcript.py).
+# --- tools/sync_from_frappe.py copies this block VERBATIM. Keep it pure:
+# --- stdlib and _() only, nothing from frappe.  BEGIN transcript-readable
 def _readable_response(ai_response: str) -> tuple:
 	"""Split an agent reply into what a person reads and what a picker needs.
 
@@ -1720,6 +1733,7 @@ def _collapsible_question(spoken: str, questions: list, answer: str = "") -> str
 		f"{body}\n"
 		"</details>"
 	)
+# --- END transcript-readable
 
 
 def fold_the_answer_in(session_id: str, answer: str) -> bool:
@@ -1783,6 +1797,9 @@ def fold_the_answer_in(session_id: str, answer: str) -> bool:
 		return False
 
 
+# --- SHARED WITH THE ODOO MODULE (razyyn_ai/services/transcript.py).
+# --- tools/sync_from_frappe.py copies this block VERBATIM. Keep it pure:
+# --- stdlib and _() only, nothing from frappe.  BEGIN transcript-answer
 #: THE CARRIER FOR A QUESTION THAT IS NOT FOLDED. Invisible in the transcript,
 #: and the only thing that lets the answer picker reopen after a reload. It
 #: predates the fold and was very nearly deleted with it; a lone question has
@@ -1823,6 +1840,7 @@ def _answer_text(message: str) -> str:
 	if not answers:
 		return ""
 	return "\n".join(answers)
+# --- END transcript-answer
 
 
 @frappe.whitelist()
@@ -1834,6 +1852,7 @@ def edit_message(
 	agent_type: str = "auto",
 	file_urls: list[str] | str | None = None,
 	scan: bool | str = False,
+	high_thinking: bool | str = False,
 	title: str | None = None,
 ) -> dict:
 	"""Edit a previously sent message of your own and regenerate from there.
@@ -1903,6 +1922,7 @@ def edit_message(
 		agent_type=agent_type,
 		file_urls=file_urls,
 		scan=scan,
+		high_thinking=high_thinking,
 	)
 
 

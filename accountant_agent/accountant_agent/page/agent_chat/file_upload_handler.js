@@ -59,6 +59,15 @@ class FileUploadHandler {
 		// which is the right way round: the rare case pays the click.
 		this.scan_enabled = localStorage.getItem('agent_chat_scan_enabled') !== '0';
 
+		// HIGH THINKING — the customer's own switch, remembered.
+		//
+		// On, the message is routed to the consultant team — a leader and
+		// three senior consultants deliberating in parallel. That is the
+		// right treatment for a genuinely complex matter and a slow,
+		// expensive one for everything else, so IT STARTS OFF: the manager
+		// judges complexity by itself unless the customer says otherwise.
+		this.high_thinking_enabled = localStorage.getItem('agent_chat_high_thinking') === '1';
+
 		// THE RULES COME FROM THE SERVER, NOT FROM HERE.
 		//
 		// This file used to carry its own list of accepted file types, and it
@@ -113,6 +122,7 @@ class FileUploadHandler {
 
 		this._render_attach_button();
 		this._render_scan_button();
+		this._render_think_button();
 		this._render_preview_area();
 		this._bind_events();
 		this._load_rules_from_server();
@@ -177,6 +187,47 @@ class FileUploadHandler {
 		this.scan_enabled = !this.scan_enabled;
 		localStorage.setItem('agent_chat_scan_enabled', this.scan_enabled ? '1' : '0');
 		this._paint_scan_button();
+	}
+
+	_render_think_button() {
+		this.$think_btn = $(`
+			<button class="agent-think-btn" type="button">
+				<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+					<path d="M12 3a6.5 6.5 0 0 1 6.5 6.5c0 2.2-1.1 3.6-2.1 4.8-.7.9-1.4 1.7-1.4 2.7v.5h-6v-.5c0-1-.7-1.8-1.4-2.7-1-1.2-2.1-2.6-2.1-4.8A6.5 6.5 0 0 1 12 3zM9.5 19.5h5M10.5 21.5h3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+				<span class="agent-think-label">${__('High Thinking')}</span>
+			</button>
+		`);
+
+		this.$think_btn.on('click', () => this._toggle_think());
+
+		// Beside the scan switch: the two message-level switches live
+		// together, and a switch kept anywhere else is a switch nobody finds.
+		let $flex_row = this.$container.find('.agent-input-footer-left').first();
+		if (this.$scan_btn && this.$scan_btn.parent().length) {
+			this.$scan_btn.after(this.$think_btn);
+		} else if ($flex_row.length) {
+			$flex_row.append(this.$think_btn);
+		}
+		this._paint_think_button();
+	}
+
+	_paint_think_button() {
+		if (!this.$think_btn) return;
+		this.$think_btn.toggleClass('active', !!this.high_thinking_enabled);
+		this.$think_btn.attr('aria-pressed', this.high_thinking_enabled ? 'true' : 'false');
+		// One short line each way, for somebody who has never heard of a
+		// consultant team: what pressing it does to the message I am typing.
+		this.$think_btn.attr('title', this.high_thinking_enabled
+			? __('On: for complex issues — your question goes to the consultant team for deeper analysis. Slower and more thorough. Click to turn off.')
+			: __('Off: for complex issues — turn on to send your question to the consultant team for deeper analysis. Slower and more thorough.'));
+	}
+
+	/** Turn High Thinking on or off. Remembered, and read at send. */
+	_toggle_think() {
+		this.high_thinking_enabled = !this.high_thinking_enabled;
+		localStorage.setItem('agent_chat_high_thinking', this.high_thinking_enabled ? '1' : '0');
+		this._paint_think_button();
 	}
 
 	_render_preview_area() {

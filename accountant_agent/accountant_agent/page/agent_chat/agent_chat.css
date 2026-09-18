@@ -2568,12 +2568,48 @@ body[data-theme="dark"] .agent-msg-actions .chat-action-btn:hover {
 	flex-shrink: 0;
 }
 
+/* The High Thinking switch dresses exactly like its neighbour. */
+.agent-think-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	height: 32px;
+	padding: 0 10px;
+	border: 1px solid var(--chat-border);
+	border-radius: 16px;
+	background: transparent;
+	color: var(--chat-text-muted);
+	font-size: 12px;
+	font-weight: 500;
+	line-height: 1;
+	cursor: pointer;
+	white-space: nowrap;
+	transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.agent-think-btn:hover {
+	background-color: var(--chat-border);
+	color: var(--chat-primary);
+}
+
+.agent-think-btn.active {
+	border-color: var(--chat-primary);
+	color: var(--chat-primary);
+	background-color: var(--color-accent-glow, rgba(0, 123, 255, 0.08));
+}
+
+.agent-think-btn svg {
+	flex-shrink: 0;
+}
+
 /* Room is tight on a phone; the icon alone still reads as the switch. */
 @media (max-width: 560px) {
-	.agent-scan-label {
+	.agent-scan-label,
+	.agent-think-label {
 		display: none;
 	}
-	.agent-scan-btn {
+	.agent-scan-btn,
+	.agent-think-btn {
 		padding: 0 8px;
 	}
 }
@@ -2625,4 +2661,29 @@ body[data-theme="dark"] .agent-msg-actions .chat-action-btn:hover {
 	border-radius: 2px;
 	background-color: var(--chat-primary);
 	transition: width 0.35s ease;
+}
+
+/* ── A message is read in the direction its own script runs ──────────────────
+ *
+ * The page mirrors with the Frappe interface language, which is one setting
+ * for the whole desk — so an Arabic, Hebrew or Persian reply inside an
+ * English-configured interface read left-to-right, with its punctuation
+ * landing on the wrong side of the sentence. This product answers in whatever
+ * language the customer writes in, so the direction belongs to the MESSAGE,
+ * not to the interface.
+ *
+ * `unicode-bidi: plaintext` is the CSS form of `dir="auto"`: each paragraph
+ * takes its direction from its own first strong character, and `text-align:
+ * start` then follows that direction. It names no script and no language, so
+ * a customer writing Urdu or Divehi gets it without anybody adding them to a
+ * list — the same rule the agent itself now follows.
+ *
+ * The step checklist is included on purpose: the titles the customer watches
+ * tick past are written in their language too.
+ */
+.agent-msg-bubble,
+.agent-todo-title,
+.agent-todo-detail {
+	unicode-bidi: plaintext;
+	text-align: start;
 }
