@@ -25,7 +25,7 @@ It works the way your finance department is supposed to: securely, and in line w
 - [Configuration Guide](#configuration-guide)
   - [1. Agent Settings](#1-agent-settings)
   - [2. Agent Write Policy (Guardrails for Ledger Writes)](#2-agent-write-policy-guardrails-for-ledger-writes)
-  - [3. Agent Messaging Settings (Gmail & Telegram)](#3-agent-messaging-settings-gmail--telegram)
+  - [3. Agent Messaging Settings (Email, Telegram & Slack)](#3-agent-messaging-settings-email-telegram--slack)
   - [4. ERP Role & User Permissions](#4-erp-role--user-permissions)
 - [Auditability & Observability](#auditability--observability)
 - [Usage Examples](#usage-examples)
@@ -45,7 +45,7 @@ Accounting work is complex and high-stakes — a simple chatbot isn't enough to 
 - **Reconcile bank statements.** Upload a statement (CSV/Excel/PDF) and Razyyn AI matches it against your ledger, classifying differences and proposing settlement entries.
 - **Read your documents.** Extracts data from uploaded invoices, receipts, and contracts (PDF, DOCX, CSV, Excel, images).
 - **Prepare and post entries — with your approval.** Journal Entries, Payment Entries, Sales/Purchase Invoices, Customers, and Suppliers are proposed as a clear card showing every debit, credit, tax, and party. Nothing is written to your books until you click **Approve**.
-- **Export & deliver results.** Generates PDF, Excel, CSV, and TXT deliverables, and can send reports and alerts by **Gmail** or **Telegram**.
+- **Export & deliver results.** Generates PDF, Excel, CSV, and TXT deliverables, and can send reports and alerts by **Email**, **Telegram**, or **Slack**.
 - **Zero-credential connection.** No API keys to copy or paste — your ERP connects to Razyyn AI securely in one click.
 - **Fail-closed by default.** Out of the box, the agent has zero write permissions. Every write is bound by both your ERPNext role permissions and a server-enforced write policy you control.
 - **Compliant by configuration.** Teach the agent your company's policies, your country's tax and regulatory rules, and your chart of accounts conventions in **Agent Settings**, and every answer, entry, and audit finding respects them — grounded in standard accounting principles (IFRS / GAAP) by default.
@@ -60,7 +60,8 @@ Accounting work is complex and high-stakes — a simple chatbot isn't enough to 
 | **Frappe Framework** | Version 15.x |
 | **ERPNext** | Version 15.x |
 | **Python** | Python 3.10, 3.11, or 3.12 |
-| **Python Dependencies** | `pymupdf`, `python-docx`, `pandas`, `python-pptx`, `pillow`, `requests` (managed automatically via `pyproject.toml`) |
+| **Python Dependencies** | `pymupdf`, `python-docx`, `pandas`, `python-pptx`, `pillow`, `requests`, `pytesseract`, `pdf2image` (managed automatically via `pyproject.toml`) |
+| **System Packages (for OCR)** | `tesseract-ocr` (with the language data you need, e.g. `eng`, `ara`) and `poppler-utils`, installed via your OS package manager |
 | **Database** | MariaDB 10.6+ or PostgreSQL 14+ |
 | **Browser Support** | Modern Chrome, Firefox, Safari, Edge (Desktop & Tablet) |
 
@@ -131,7 +132,7 @@ Traditional integrations force administrators to generate API keys and copy secr
 | **Email** (`email`) | Data | The email address registered with Razyyn AI. | Auto-populated upon sign-in from the chat interface. |
 | **API Key** (`api_key`) | Password | Encrypted platform secret key authenticating requests to Razyyn. | Managed automatically by the onboarding handshake. |
 | **Access Token** (`access_token`) | Password | Bearer JWT token storing active session claims. | Handled automatically during sign-in. |
-| **Custom Instructions** (`custom_instructions`) | Long Text (20,000 char max) | Custom behavioral prompt, corporate accounting rules, tax guidelines, or operational tone. | **Recommended:** Input standard operating procedures (e.g., *"Always use FIFO for inventory valuation. Default cost center is 'Main'. Treat invoices over $5,000 with high scrutiny."*). |
+| **Custom Instructions** (`custom_instructions`) | Long Text | Custom behavioral prompt, corporate accounting rules, tax guidelines, or operational tone. | **Recommended:** Input standard operating procedures (e.g., *"Always use FIFO for inventory valuation. Default cost center is 'Main'. Treat invoices over $5,000 with high scrutiny."*). |
 
 #### Teaching the Agent Your Company, Country & Accounting Rules
 
@@ -149,10 +150,9 @@ Traditional integrations force administrators to generate API keys and copy secr
 
 #### Usage Dashboard
 The form displays a live dashboard reporting:
-- **Plan Tier Badge:** `Free`, `Pro`, or `Ultra`.
-- **Daily Limit Usage Bar:** Percentage of your 24-hour quota consumed. Resets every 24 hours.
-- **Billing Cycle Usage Bar:** 30-day cumulative consumption.
-- **Refresh Stats Button:** Instantly queries the platform for updated token usage metrics.
+- **Plan Tier Badge:** `Free`, `Plus`, `Pro`, `Ultra`, or a custom plan, colour-coded on the card.
+- **Billing Cycle Usage Bar:** Percentage of your 30-day billing cycle quota consumed.
+- **Refresh Stats Button:** Instantly queries the platform for updated usage metrics.
 
 #### Creator Agent — Recording Access Card
 - **Connection Status Badges:**
@@ -188,6 +188,7 @@ The **Agent Write Policy** is your organization's server-side safety harness. It
 ##### Child Table: `Agent Write Allowed Doctype`
 - **Document Type (`document_type`):** Link to DocType (e.g. `Journal Entry`, `Sales Invoice`, `Purchase Invoice`, `Payment Entry`).
 - **Allow Create (`allow_create`):** Permits preparing draft records (`docstatus = 0`).
+- **Allow Update (`allow_update`):** Permits editing an existing draft record.
 - **Allow Submit (`allow_submit`):** Permits posting directly to the ledger (`docstatus = 1`).
 - **Allow Cancel (`allow_cancel`):** Permits cancelling submitted records (`docstatus = 2`).
 - **Allow Amend (`allow_amend`):** Permits amending cancelled documents.
@@ -209,41 +210,41 @@ Controls the maximum exposure of any single batch run.
 
 ---
 
-### 3. Agent Messaging Settings (Gmail & Telegram)
+### 3. Agent Messaging Settings (Email, Telegram & Slack)
 > **Route:** `/app/agent-messaging-settings` | **Type:** Single DocType | **Access:** System Manager
 
-Enables Razyyn AI to dispatch generated financial statements, audit summaries, and alerts to team members and external stakeholders.
+Enables Razyyn AI to dispatch generated financial statements, audit summaries, and alerts to team members and external stakeholders over three channels, each on its own tab.
 
-#### Tab 1: Gmail Integration (Google Workspace Domain-Wide Delegation)
-Allows the agent to send emails from your real company domain (e.g., `finance@yourcompany.com`) without storing personal user passwords.
+#### Tab 1: Email (SMTP)
+Sends mail through a standard SMTP mailbox — no Google Workspace admin setup required.
 
-##### Google Workspace Setup (One-Time by Workspace Admin):
-1. Navigate to [Google Cloud Console](https://console.cloud.google.com) and create a project (e.g. `Razyyn Agent Mail`).
-2. Enable the **Gmail API** in **APIs & Services > Library**.
-3. Create a **Service Account** under **APIs & Services > Credentials** (e.g. `razyyn-mailer`).
-4. In the Service Account details, go to **Keys > Add Key > Create New Key > JSON**. Download the key file.
-5. Copy the **Unique ID** (Client ID) of the service account.
-6. Open the [Google Workspace Admin Console](https://admin.google.com).
-7. Navigate to **Security > Access and data control > API controls > Manage Domain Wide Delegation**.
-8. Click **Add new**, paste the **Client ID**, and enter the single scope:
-   ```
-   https://www.googleapis.com/auth/gmail.send
-   ```
-9. Click **Authorise**.
+##### Setup:
+1. In your mail provider, create or use a mailbox for the agent (e.g. `finance@yourcompany.com`) and generate an **App Password** for it if your provider requires one (Gmail, Microsoft 365, etc. all support this under the account's security settings). Use the App Password here, never the mailbox owner's personal login password.
+2. In ERPNext, open **Agent Messaging Settings** → **Email** tab and fill in:
 
-##### Configuration in ERPNext:
 | Field | Value / Setup |
 |---|---|
-| **Send email through Gmail** (`gmail_enabled`) | Check to enable outbound emails. |
-| **Send As** (`gmail_sender_email`) | A real mailbox in your Workspace domain (e.g. `billing@yourcompany.com`). |
+| **Send email from this mailbox** (`gmail_enabled`) | Check to enable outbound email. |
+| **Send As** (`gmail_sender_email`) | The mailbox address the agent sends from. |
 | **Sender Display Name** (`gmail_sender_name`) | Name shown in recipient inboxes (e.g. `Acme Finance Agent`). |
-| **Service Account Key (JSON)** (`gmail_service_account_json`) | Paste the entire JSON file contents from Google Cloud. Stored encrypted. |
-| **Last Problem** (`gmail_last_error`) | Read-only diagnostic field showing the last error returned by Google. |
+| **Mail Server** (`gmail_smtp_host`) | Your SMTP host (e.g. `smtp.gmail.com`, `smtp.office365.com`). |
+| **Port** (`gmail_smtp_port`) | The SMTP port for your server (e.g. `587`). |
+| **Security** (`gmail_smtp_security`) | `STARTTLS` (suits almost every provider, Gmail included), `SSL`, or `None` (only for a mail server inside your own network). |
+| **Username** (`gmail_smtp_username`) | Usually the same as the sending mailbox address. |
+| **Password / App Password** (`gmail_smtp_password`) | The App Password generated in step 1. Stored encrypted. |
+| **Last Problem** (`gmail_last_error`) | Read-only diagnostic field showing the last SMTP error. |
+| **Saved Recipients** (`email_destinations`) | Address book of named recipients the agent can send to by name. |
+
+##### Saved Recipients (`Agent Email Destination`):
+- **Name (`label`):** Natural name used in chat prompts (e.g. `Finance Team`, `CFO`).
+- **Email Address (`email_address`):** The recipient's mailbox.
+- **Default (`is_default`):** Checked for the default recipient when none is specified.
+- **Notes (`notes`):** Optional free-text note.
 
 ---
 
-#### Tab 2: Telegram Integration
-Allows Razyyn AI to post notifications and deliver Excel/PDF reports into internal Telegram groups or management channels.
+#### Tab 2: Telegram
+Allows Razyyn AI to post notifications and deliver Excel/PDF reports into internal Telegram groups or channels.
 
 ##### Telegram Bot Setup:
 1. Open Telegram, search for **@BotFather**, and send `/newbot`.
@@ -260,10 +261,33 @@ Allows Razyyn AI to post notifications and deliver Excel/PDF reports into intern
 |---|---|
 | **Send messages through Telegram** (`telegram_enabled`) | Check to activate Telegram dispatching. |
 | **Bot Token** (`telegram_bot_token`) | Paste the token from BotFather. Stored encrypted. |
-| **Destinations Table** (`telegram_destinations`) | Whitelist of valid chat destinations: |
+| **Last Problem** (`telegram_last_error`) | Read-only diagnostic field showing the last Telegram API error. |
+| **Destinations** (`telegram_destinations`) | Whitelist of valid chat destinations: |
 | ↳ **Name** (`label`) | Natural name used in chat prompts (e.g. `Finance Team`, `CFO Alert`). |
 | ↳ **Chat ID** (`chat_id`) | Numeric Telegram chat identifier (e.g. `-1001234567890`). |
 | ↳ **Default** (`is_default`) | Checked for the default recipient when none is specified. |
+
+---
+
+#### Tab 3: Slack
+Allows Razyyn AI to post notifications and deliver reports directly into Slack channels.
+
+##### Slack App Setup:
+1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps) and add the `chat:write` bot scope under **OAuth & Permissions**.
+2. Install the app to your workspace and copy the **Bot User OAuth Token**.
+3. Invite the bot to the channel(s) it should post in (`/invite @your-bot-name`).
+4. Note the Channel ID for each channel (found at the bottom of a channel's details panel in Slack).
+
+##### Configuration in ERPNext:
+| Field | Value / Setup |
+|---|---|
+| **Send messages through Slack** (`slack_enabled`) | Check to activate Slack dispatching. |
+| **Bot Token** (`slack_bot_token`) | The Bot User OAuth Token from step 2. Stored encrypted. |
+| **Last Problem** (`slack_last_error`) | Read-only diagnostic field showing the last Slack API error. |
+| **Destinations** (`slack_destinations`) | Whitelist of valid channel destinations: |
+| ↳ **Name** (`label`) | Natural name used in chat prompts (e.g. `Finance Team`). |
+| ↳ **Channel ID** (`channel_id`) | Slack channel identifier. |
+| ↳ **Default** (`is_default`) | Checked for the default channel when none is specified. |
 
 ---
 
@@ -283,20 +307,22 @@ Razyyn AI checks two independent layers before any write reaches your database: 
 > **Route:** `/app/agent-write-log`
 
 An immutable, append-only ledger recording every write attempt made by Razyyn AI, including successful commits, validations, and policy rejections:
-- **Idempotency Key:** Cryptographic UUID ensuring network retries never duplicate transactions.
-- **Action & Status:** `create`, `submit`, `cancel`, `amend` with status `written`, `rejected`, or `failed`.
-- **Target Document:** DocType and Name (e.g., `Journal Entry JV-2026-00042`).
-- **Audit Actors:** Shows `agent_user` and the human `approved_by` who verified the transaction.
-- **Integrity Digest:** SHA-256 hash of the exact payload passed to the ERP.
-- **Traceability:** Links to `session_id` and `run_id` to correlate back to the original chat conversation.
+- **Idempotency Key:** Cryptographic key ensuring network retries never duplicate transactions.
+- **Action:** `create`, `update`, `submit`, `cancel`, or `amend`.
+- **Status:** `IN_FLIGHT`, `COMMITTED`, or `FAILED`.
+- **Target Document:** DocType and Name (e.g., `Journal Entry JV-2026-00042`), plus the resulting docstatus.
+- **Audit Actors:** Shows `agent_user` and the human `approved_by` who verified the transaction, linked to `session_id` and `run_id`.
+- **Integrity Digest:** Hash of the exact request payload passed to the ERP.
+- **Diagnostics:** Error code, error message, and response snapshot for any failed or rejected write.
 
 ### 2. Agent Message Log
 > **Route:** `/app/agent-message-log`
 
-Maintains a complete record of all outbound emails and Telegram messages dispatched by the agent:
-- Recipient email or Telegram destination label.
-- Delivery status, timestamp, and provider message ID.
-- Subject line and truncated body snippet (preserving communication privacy while verifying audit compliance).
+Maintains a complete record of all outbound email, Telegram, and Slack messages dispatched by the agent:
+- Channel, recipient/destination, and destination name.
+- Delivery status, timestamp, and provider message ID (the receipt).
+- Subject line and a truncated body preview, plus any attachment names.
+- Who requested the message and who approved it, linked to the originating chat session and run.
 
 ---
 
@@ -346,15 +372,19 @@ Access Razyyn AI from the ERPNext desk menu or visit `/app/agent-chat`.
 - **Cause:** The chat ID is missing the leading minus sign, or the bot was never invited to the group.
 - **Resolution:** Verify group IDs start with `-100...` and verify the bot is an administrator in the target chat.
 
-### 4. Gmail error: *"unauthorized_client"*
-- **Cause:** Step 6 of Gmail setup (Domain-Wide Delegation in Google Workspace Admin) was skipped or has an incorrect Client ID / Scope.
-- **Resolution:** Re-check that the service account Unique ID is authorized in `admin.google.com` with scope `https://www.googleapis.com/auth/gmail.send`.
+### 4. Email fails to send / authentication error
+- **Cause:** The SMTP username/password (or App Password) is wrong, or the wrong **Security** mode was chosen for the mail server's port.
+- **Resolution:** Confirm you generated an **App Password** (not the mailbox owner's personal password) if your provider requires one, and match `gmail_smtp_security` to what your provider expects for the configured port (`STARTTLS` for `587`, `SSL` for `465`). Check `gmail_last_error` in **Agent Messaging Settings** for the exact SMTP response.
+
+### 5. Slack error: *"channel_not_found"* or *"not_in_channel"*
+- **Cause:** The bot has not been invited to the target channel, or the Channel ID is wrong.
+- **Resolution:** Invite the bot to the channel with `/invite @your-bot-name` and verify the Channel ID in **Agent Messaging Settings**.
 
 ---
 
 ## Security, Privacy & Compliance
 
-- **Encrypted Credentials:** API keys, service account JSON files, and bot tokens are stored in Frappe's encrypted `__Auth` table using Fernet encryption.
+- **Encrypted Credentials:** API keys, SMTP passwords, and bot tokens are stored in Frappe's encrypted `__Auth` table using Fernet encryption.
 - **Append-Only Logging:** The `Agent Write Log` overrides standard deletion hooks (`on_trash`), making it impossible for users or the agent to erase audit trails.
 - **Strict Tenant Isolation:** Backend databases employ Row-Level Security (RLS) ensuring strict data segregation across tenant environments.
 - **No Model Training:** Customer accounting data transmitted for reasoning is strictly ephemeral and never used for LLM fine-tuning or training.
