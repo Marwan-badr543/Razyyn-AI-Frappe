@@ -11,8 +11,27 @@ class ChatSessionManager {
 		this.chats = [];
 		this.session_id = null;
 		this.is_new_chat_draft = false;
+		// Which rebuild of the transcript is the current one. See
+		// load_chat_history(): two rebuilds racing used to draw every message
+		// twice.
+		this.history_generation = 0;
 	}
 
+	// REFRESHING THE SIDEBAR MUST NEVER MOVE THE CUSTOMER.
+	//
+	// This runs after every turn of every conversation, including ones the
+	// customer is not looking at. It used to treat "my open session is not in
+	// the server's list" as "that conversation is gone, open the newest one" —
+	// but a chat the customer has only just opened and not yet sent anything in
+	// is not on the server either (create_chat_with_id runs on the first send).
+	// So a background chat finishing anywhere yanked them out of the empty chat
+	// they were typing in, and — because the old code assigned this.session_id
+	// before calling select_chat — their half-typed message was saved as the
+	// FINISHED chat's draft and handed back in its composer.
+	//
+	// Switching conversations is now something only select_chat does, and only
+	// for a reason the customer would recognise: they clicked a chat, or the
+	// one they were in no longer exists.
 	async load_chats(reload_active = true) {
 		try {
 			this.chats = await frappe.xcall(
@@ -21,17 +40,20 @@ class ChatSessionManager {
 
 			this.render_chat_list();
 
-			if (this.chats.length > 0) {
-				let active_exists = this.chats.some((c) => c.session_id === this.session_id);
-				if (!active_exists) {
-					this.session_id = this.chats[0].session_id;
-					this.is_new_chat_draft = false;
-					await this.select_chat(this.session_id);
-				} else if (reload_active) {
-					await this.select_chat(this.session_id);
-				}
-			} else {
-				this.set_new_chat_draft();
+			if (this.chats.length === 0) {
+				// Nothing to open. A draft is already the right screen.
+				if (!this.is_new_chat_draft) this.set_new_chat_draft();
+				return;
+			}
+
+			// An unsent chat is theirs until they send or click away.
+			if (this.is_new_chat_draft) return;
+
+			let active_exists = this.chats.some((c) => c.session_id === this.session_id);
+			if (!active_exists) {
+				await this.select_chat(this.chats[0].session_id);
+			} else if (reload_active) {
+				await this.select_chat(this.session_id);
 			}
 		} catch (e) {
 			console.error("Error loading chats:", e);
@@ -246,7 +268,23 @@ class ChatSessionManager {
 		);
 	}
 
+	// ONE REBUILD AT A TIME, AND ONLY THE NEWEST ONE DRAWS.
+	//
+	// Four things rebuild the transcript — opening a chat, a turn finishing,
+	// the recovery poll, answering a question — and two of them routinely fire
+	// within the same instant, because the worker commits the answer just
+	// before it announces it. Each one emptied the box, waited for the server,
+	// then appended every message; two of them interleaving appended the whole
+	// conversation twice, which is what the customer saw as a plan card (and
+	// everything else) drawn in duplicate.
+	//
+	// The box is still emptied the moment a rebuild starts, so clicking a chat
+	// feels instant instead of showing the previous chat while the new one
+	// loads. What is guarded is the DRAWING: a rebuild that has been overtaken
+	// discards its own result rather than adding it to somebody else's.
 	async load_chat_history() {
+		let generation = ++this.history_generation;
+
 		this.chat.ui_manager.clear_typing_timers();
 		this.chat.ui_manager.user_pinned_to_bottom = true;
 		this.chat.ui_manager._toggle_scroll_to_bottom_btn(false);
@@ -261,6 +299,7 @@ class ChatSessionManager {
 				"accountant_agent.accountant_agent.page.agent_chat.agent_chat.get_chat_history",
 				{ session_id: this.session_id }
 			);
+			if (generation !== this.history_generation) return;
 
 			if (messages && messages.length > 0) {
 				messages.forEach((msg, idx) => {
@@ -333,9 +372,10 @@ class ChatSessionManager {
 				// whether the manager still has an unfinished checklist for this
 				// session and redraw it. One call per open, never polled — live
 				// updates arrive over the socket.
-				this.restore_todo_state();
+				this.restore_todo_state(generation);
 			}
 		} catch (e) {
+			if (generation !== this.history_generation) return;
 			console.error("Error loading chat history:", e);
 			this.chat.ui_manager.render_welcome(this.chat.msg_box);
 		}
@@ -359,7 +399,7 @@ class ChatSessionManager {
 		requestAnimationFrame(() => ui.force_scroll_to_bottom(msg_box));
 	}
 
-	async restore_todo_state() {
+	async restore_todo_state(generation = null) {
 		let session_id = this.session_id;
 		if (!session_id || this.is_new_chat_draft) return;
 		try {
@@ -371,6 +411,7 @@ class ChatSessionManager {
 			);
 			// Only a run that is still going (or waiting on the customer) is
 			// worth redrawing; a finished run's report is already in history.
+			if (generation !== null && generation !== this.history_generation) return;
 			if (
 				this.session_id === session_id &&
 				state &&

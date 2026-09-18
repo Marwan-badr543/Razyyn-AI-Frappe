@@ -405,10 +405,16 @@ class AccountantAgentChat {
 				this.stop_stream_timer(data.session_id);
 				let active_session_id = this.session_manager.session_id;
 				let header_title = __("Completed");
+				//: Whether the answer actually reached the screen. See below.
+				let drew_into_a_bubble = false;
+				//: Where the run had got to when it ended. Read before the stream is
+				//: dropped, because it decides whether the checklist survives the turn.
+				let run_status = "";
 
 				if (this.active_streams && this.active_streams[data.session_id]) {
 					let stream = this.active_streams[data.session_id];
 					let duration = stream.elapsed_seconds || 0;
+					run_status = (stream.todo && stream.todo.status) || "";
 					if (stream.reasoning) {
 						header_title = `${__("Thought for")} ${duration}s`;
 					} else {
@@ -418,6 +424,8 @@ class AccountantAgentChat {
 					stream.current_agent = data.agent || stream.current_agent;
 
 					if (data.session_id === active_session_id) {
+						drew_into_a_bubble =
+							this.msg_box.find(`#${stream.bubble_id}`).length > 0;
 						this.ui_manager.finalize_stream_bubble(
 							this.msg_box,
 							stream.bubble_id,
@@ -428,6 +436,52 @@ class AccountantAgentChat {
 						);
 					}
 					delete this.active_streams[data.session_id];
+				}
+
+				// A TURN THIS PAGE DID NOT START, FINISHING WHILE WE WATCH.
+				//
+				// The block above writes the answer into the bubble the turn
+				// opened on this page. There is no such bubble when the customer
+				// reloaded mid-run, or has the same chat open in a second tab,
+				// or sent the message from their phone — the events still
+				// arrive, the answer is written nowhere, and the chat sits
+				// looking finished and empty until they click the conversation
+				// again.
+				//
+				// Checked by looking for the bubble rather than by trusting
+				// `active_streams`, because a reloaded page acquires a stream
+				// object from the events themselves without ever having drawn
+				// anything.
+				//
+				// The turn is committed by the time this event is sent, so the
+				// stored transcript IS the answer, and redrawing it is both
+				// correct and cheap.
+				if (data.session_id === active_session_id && !drew_into_a_bubble) {
+					await this.session_manager.load_chat_history();
+				}
+
+				// THE CHECKLIST BELONGS TO THE RUN, AND THE RUN HAS ENDED.
+				//
+				// It used to be taken down only when a final checklist arrived saying
+				// so — but not every way a run can end sends one, so finished work
+				// could leave a list of steps sitting under the answer with one of
+				// them still marked as waiting. The end of the turn is the signal that
+				// always arrives, so that is what takes the checklist down.
+				//
+				// The exception is a run that has stopped to ask something: a plan to
+				// approve, or a question to answer. The turn is over, the work is not,
+				// and somebody deciding whether to approve the next step must be able
+				// to see what is done and what is still to come.
+				//
+				// Only for an answer drawn live. Where there was no bubble the whole
+				// transcript is rebuilt above, and that rebuild asks the server what
+				// the run is really doing — a better answer than anything kept here.
+				if (
+					data.session_id === active_session_id &&
+					drew_into_a_bubble &&
+					!this.run_awaits_the_customer(run_status, data.response)
+				) {
+					this.ui_manager.clear_todo_panels(this.msg_box);
 				}
 
 				if (data.session_id === active_session_id) {
@@ -1083,15 +1137,70 @@ class AccountantAgentChat {
 		}
 	}
 
+	// HAS THIS RUN STOPPED TO ASK THE CUSTOMER SOMETHING?
+	//
+	// Two independent signals, because they fail in different ways and the
+	// wrong answer is visible: say "yes" wrongly and a finished checklist
+	// stays on screen; say "no" wrongly and it vanishes from under the very
+	// approval it is there to explain.
+	//
+	//   1. The run said so. The manager always publishes its checklist marked
+	//      'paused' immediately before it hands the question over, so this is
+	//      already known by the time the turn ends.
+	//   2. The turn's last word IS the question — a plan waiting to be
+	//      approved, or a set of questions waiting to be answered. True even
+	//      if the checklist never reached this page.
+	run_awaits_the_customer(run_status, response) {
+		if (run_status === "paused") return true;
+		if (!response) return false;
+
+		let payload = response;
+		if (typeof payload === "string") {
+			let trimmed = payload.trim();
+			if (!trimmed.startsWith("{")) return false;
+			try {
+				payload = JSON.parse(trimmed);
+			} catch (e) {
+				return false;
+			}
+		}
+		if (!payload || typeof payload !== "object") return false;
+
+		if (payload.type === "clarification") return true;
+		return payload.type === "plan" && (payload.status || "pending") === "pending";
+	}
+
 	// Human name for a desk key, for the live badge and the hand-off lines.
 	// Reads from the same AGENT_DEFINITIONS the selector dropdown uses, so
 	// the two never say different things about what "Analyse Agent" means.
 	agent_display_name(agent_key) {
 		if (!agent_key) return __("Razyyn");
 		let defs = (this.agent_selector && this.agent_selector.AGENT_DEFINITIONS) || {};
-		let def = defs[agent_key];
-		if (def) return def.name;
-		if (agent_key === 'master' || agent_key === 'router') return __("Router");
+		// Own-property, for the same reason as the table below: a plain lookup
+		// on "__proto__" returns Object.prototype, which is truthy, and the
+		// name off it is `undefined` — which is what the badge then showed.
+		let def = Object.prototype.hasOwnProperty.call(defs, agent_key) ? defs[agent_key] : null;
+		if (def && def.name) return def.name;
+		// Everyone the agent server streams under, with the name they go by in
+		// the firm. "master" is the manager who reads the request, decides who
+		// does what and writes back with the answer — a FINANCE MANAGER. It
+		// used to read "Router", which is a name for a piece of plumbing: no
+		// client of an accounting firm is told their books are with a router.
+		// Own-property check because `agent_key` is untrusted (see below), and
+		// a plain lookup on "constructor" or "toString" returns a function.
+		let known = {
+			master: __("Finance Manager"),
+			router: __("Finance Manager"),
+			helper: __("Assistant"),
+			consultant: __("Advisory Board"),
+			ask: __("Ask Agent"),
+			analyse: __("Analyse Agent"),
+			audit: __("Audit Agent"),
+			reconcile: __("Reconciliation Agent"),
+			create: __("Creator Agent"),
+			update: __("Update Agent"),
+		};
+		if (Object.prototype.hasOwnProperty.call(known, agent_key)) return known[agent_key];
 		// Every caller of this function drops the return value straight into
 		// a template literal that ends up in .html()/.append()/.replaceWith()
 		// (chat_ui_manager.js thinking-agent-badge and step list). An
