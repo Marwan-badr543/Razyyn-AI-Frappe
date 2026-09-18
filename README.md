@@ -6,11 +6,13 @@
 [![License](https://img.shields.io/badge/License-MIT-amber.svg?style=flat-square)](license.txt)
 [![Status](https://img.shields.io/badge/Production-Ready-success.svg?style=flat-square)](#)
 
-> **Your AI accounting assistant, built into ERPNext.**
+> **Your complete finance department, powered by AI.**
 >
 > Learn more at [razyyn.com](https://razyyn.com).
 
-Razyyn AI adds a natural-language chat assistant to your ERPNext Desk that can answer accounting questions, analyze your financials, audit your ledgers, reconcile bank statements, and prepare accounting entries for your review — all without leaving ERPNext, and never touching your books without your explicit approval.
+Razyyn AI adds a natural-language finance team to your ERPNext Desk that can answer accounting questions, analyze your financials, audit your ledgers, reconcile bank statements, and prepare accounting entries for your review — all without leaving ERPNext, and never touching your books without your explicit approval.
+
+It works the way your finance department is supposed to: securely, and in line with **your company's own policies, your country's tax and regulatory rules, and standard accounting principles (IFRS / GAAP)** — all configurable, so the agent reasons and acts the way your organization actually operates.
 
 ---
 
@@ -46,6 +48,8 @@ Accounting work is complex and high-stakes — a simple chatbot isn't enough to 
 - **Export & deliver results.** Generates PDF, Excel, CSV, and TXT deliverables, and can send reports and alerts by **Gmail** or **Telegram**.
 - **Zero-credential connection.** No API keys to copy or paste — your ERP connects to Razyyn AI securely in one click.
 - **Fail-closed by default.** Out of the box, the agent has zero write permissions. Every write is bound by both your ERPNext role permissions and a server-enforced write policy you control.
+- **Compliant by configuration.** Teach the agent your company's policies, your country's tax and regulatory rules, and your chart of accounts conventions in **Agent Settings**, and every answer, entry, and audit finding respects them — grounded in standard accounting principles (IFRS / GAAP) by default.
+- **Secure end-to-end.** Encrypted credentials, an append-only audit trail, and strict tenant data isolation protect your books and your data at every step.
 
 ---
 
@@ -128,6 +132,20 @@ Traditional integrations force administrators to generate API keys and copy secr
 | **API Key** (`api_key`) | Password | Encrypted platform secret key authenticating requests to Razyyn. | Managed automatically by the onboarding handshake. |
 | **Access Token** (`access_token`) | Password | Bearer JWT token storing active session claims. | Handled automatically during sign-in. |
 | **Custom Instructions** (`custom_instructions`) | Long Text (20,000 char max) | Custom behavioral prompt, corporate accounting rules, tax guidelines, or operational tone. | **Recommended:** Input standard operating procedures (e.g., *"Always use FIFO for inventory valuation. Default cost center is 'Main'. Treat invoices over $5,000 with high scrutiny."*). |
+
+#### Teaching the Agent Your Company, Country & Accounting Rules
+
+`Custom Instructions` is where you make Razyyn AI operate as **your** finance department, not a generic one. Anything typed here is applied to every question, analysis, audit, and entry the agent produces. As a rule of thumb, cover three layers:
+
+1. **Company policy** — your internal SOPs and thresholds.
+   > *"Default company is 'Acme Global FZE'. Default cost center is 'Head Office'. Purchase invoices above $5,000 require a Finance Manager's approval before posting. Always use FIFO for inventory valuation."*
+2. **Country & regulatory rules** — the tax regime and statutory requirements you operate under.
+   > *"We operate under UAE VAT law (5% standard rate). Apply reverse charge for imported services. Retain supporting documents for 5 years per FTA requirements. Do not backdate entries into a closed VAT period."*
+3. **Accounting principles** — the framework your financial statements follow.
+   > *"Report under IFRS. Recognize subscription revenue over the service period per IFRS 15. Classify leases per IFRS 16."*
+
+> [!TIP]
+> Keep instructions short, specific, and stated as rules (not prose) — the agent applies them literally on every task, so precise thresholds and named accounts work far better than general guidance.
 
 #### Usage Dashboard
 The form displays a live dashboard reporting:
@@ -340,6 +358,7 @@ Access Razyyn AI from the ERPNext desk menu or visit `/app/agent-chat`.
 - **Append-Only Logging:** The `Agent Write Log` overrides standard deletion hooks (`on_trash`), making it impossible for users or the agent to erase audit trails.
 - **Strict Tenant Isolation:** Backend databases employ Row-Level Security (RLS) ensuring strict data segregation across tenant environments.
 - **No Model Training:** Customer accounting data transmitted for reasoning is strictly ephemeral and never used for LLM fine-tuning or training.
+- **Compliance-aware by configuration:** The agent reasons and acts within the company policy, country regulatory rules, and accounting principles (IFRS/GAAP) you configure in [Agent Settings](#1-agent-settings) — every write is additionally bound by your ERPNext role permissions and the [Agent Write Policy](#2-agent-write-policy-guardrails-for-ledger-writes).
 
 ---
 
