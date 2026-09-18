@@ -1,190 +1,51 @@
-# Razyyn AI — Accountant Agent for Frappe & ERPNext v15
+# Razyyn AI — Accountant Agent for Frappe & ERPNext v14
 
-[![Frappe Version](https://img.shields.io/badge/Frappe-v15-blue.svg?style=flat-square)](https://frappeframework.com)
-[![ERPNext Version](https://img.shields.io/badge/ERPNext-v15-blueviolet.svg?style=flat-square)](https://erpnext.com)
+[![Frappe Version](https://img.shields.io/badge/Frappe-v14-blue.svg?style=flat-square)](https://frappeframework.com)
+[![ERPNext Version](https://img.shields.io/badge/ERPNext-v14-blueviolet.svg?style=flat-square)](https://erpnext.com)
 [![Python Version](https://img.shields.io/badge/Python-3.10%2B-green.svg?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-amber.svg?style=flat-square)](license.txt)
 [![Status](https://img.shields.io/badge/Production-Ready-success.svg?style=flat-square)](#)
 
-> **Enterprise-Grade Autonomous AI Accounting Team Embedded Natively in Frappe & ERPNext.**
+> **Your AI accounting assistant, built into ERPNext.**
+>
+> Learn more at [razyyn.com](https://razyyn.com).
 
-Razyyn AI transforms your ERPNext instance into an intelligent financial operations hub. Rather than a simple conversational chatbot, Razyyn AI provides an autonomous **AI Manager** orchestrating specialized **accounting desks** (Q&A, In-Depth Financial Analysis, Forensic Auditing, Bank Reconciliation, and Document Creation/Posting) with strict, server-enforced internal controls and human-in-the-loop approval workflows.
+Razyyn AI adds a natural-language chat assistant to your ERPNext Desk that can answer accounting questions, analyze your financials, audit your ledgers, reconcile bank statements, and prepare accounting entries for your review — all without leaving ERPNext, and never touching your books without your explicit approval.
 
 ---
 
 ## Table of Contents
 
-- [Overview: What is Razyyn AI?](#overview-what-is-razyyn-ai)
-- [Architecture & Specialized Desks](#architecture--specialized-desks)
-  - [1. The Manager (Orchestrator)](#1-the-manager-orchestrator)
-  - [2. Ask Desk (Accounting Q&A & Lookups)](#2-ask-desk-accounting-qa--lookups)
-  - [3. Analyse Desk (Financial Reports & Charts)](#3-analyse-desk-financial-reports--charts)
-  - [4. Audit Desk (Forensics & Internal Controls)](#4-audit-desk-forensics--internal-controls)
-  - [5. Reconcile Desk (Bank & Ledger Matching)](#5-reconcile-desk-bank--ledger-matching)
-  - [6. Creator Desk (Ledger Writing & ERP Recording)](#6-creator-desk-ledger-writing--erp-recording)
-  - [7. Document Generator & Message Dispatcher](#7-document-generator--message-dispatcher)
-- [System Architecture & Data Flow](#system-architecture--data-flow)
+- [What Razyyn AI Does](#what-razyyn-ai-does)
 - [Prerequisites & System Requirements](#prerequisites--system-requirements)
 - [Installation Guide](#installation-guide)
-- [Zero-Credential Onboarding (Connecting Your ERP)](#zero-credential-onboarding-connecting-your-erp)
-- [Comprehensive Configuration Guide](#comprehensive-configuration-guide)
+- [Connecting Your ERP](#connecting-your-erp)
+- [Configuration Guide](#configuration-guide)
   - [1. Agent Settings](#1-agent-settings)
-  - [2. Agent Write Policy (Authoritative Guardrails)](#2-agent-write-policy-authoritative-guardrails)
+  - [2. Agent Write Policy (Guardrails for Ledger Writes)](#2-agent-write-policy-guardrails-for-ledger-writes)
   - [3. Agent Messaging Settings (Gmail & Telegram)](#3-agent-messaging-settings-gmail--telegram)
   - [4. ERP Role & User Permissions](#4-erp-role--user-permissions)
-- [Auditability & Observability (Write Log & Message Log)](#auditability--observability-write-log--message-log)
-- [Real-World Usage & Prompt Examples](#real-world-usage--prompt-examples)
+- [Auditability & Observability](#auditability--observability)
+- [Usage Examples](#usage-examples)
 - [Troubleshooting & FAQs](#troubleshooting--faqs)
 - [Security, Privacy & Compliance](#security-privacy--compliance)
 - [License & Support](#license--support)
 
 ---
 
-## Overview: What is Razyyn AI?
+## What Razyyn AI Does
 
-Accounting is complex, multi-step, and high-stakes. Single-shot LLM prompts often fail when asked to reconcile accounts, detect fraudulent patterns, or post ledger entries. 
+Accounting work is complex and high-stakes — a simple chatbot isn't enough to reconcile accounts, spot irregularities, or post ledger entries reliably. Razyyn AI is built specifically for the job, directly inside your ERPNext Desk:
 
-**Razyyn AI** solves this by embedding an autonomous, multi-agent financial operations team directly inside your ERPNext Desk:
-
-- **Specialized Division of Labor:** Prompts are analyzed by a central Manager Agent that breaks complex objectives into sequential tasks dispatched to dedicated specialist desks.
-- **Fail-Closed Security Posture:** The agent is provisioned out-of-the-box with zero write capabilities. All ledger mutations are bounded by your ERP user role permissions and the server-enforced **Agent Write Policy**.
-- **Human-in-the-Loop Governance:** Transactions are never committed silently. The agent prepares structured proposal cards detailing debits, credits, taxes, and parties, requiring an explicit human click on **Approve** before anything is recorded.
-- **Zero-Credential Onboarding:** Connecting your ERP to Razyyn AI requires no copying or pasting of API keys or secrets. Authentication is provisioned and exchanged securely over your active session in one click.
-- **Rich Visualization & Deliverables:** Generates live interactive charts (Mermaid diagrams and Chart.js graphs) and exports formal deliverables in PDF, Excel (`.xlsx`), CSV, and TXT formats.
-- **Omnichannel Dispatch:** Distributes reports, alerts, and files through your corporate **Gmail** (via Google Workspace service account delegation) and **Telegram** channels.
-
----
-
-## Architecture & Specialized Desks
-
-```
-                                  ┌───────────────────────────┐
-                                  │   User in ERPNext Desk    │
-                                  │    (/app/agent-chat)      │
-                                  └─────────────┬─────────────┘
-                                                │ Natural Language & Files
-                                                ▼
-                                  ┌───────────────────────────┐
-                                  │  Razyyn Manager Agent     │
-                                  │ (Planner & Orchestrator)  │
-                                  └─────────────┬─────────────┘
-                                                │
-         ┌───────────────────┬──────────────────┼──────────────────┬──────────────────┐
-         │                   │                  │                  │                  │
-         ▼                   ▼                  ▼                  ▼                  ▼
-  ┌──────────────┐    ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-  │   Ask Desk   │    │ Analyse Desk │   │  Audit Desk  │   │Reconcile Desk│   │ Creator Desk │
-  │  (Read-Only  │    │  (Financial  │   │  (Forensics  │   │ (Bank/Ledger │   │ (Writes into │
-  │  Q&A & SQL)  │    │  & Charts)   │   │  & Controls) │   │  Matching)   │   │   ERPNext)   │
-  └──────────────┘    └──────────────┘   └──────────────┘   └──────────────┘   └───────┬──────┘
-                                                                                       │
-                                                                                       ▼
-                                                                        ┌─────────────────────────────┐
-                                                                        │  Agent Write Policy Gate    │
-                                                                        │  & Human Approval Workflow  │
-                                                                        └──────────────┬──────────────┘
-                                                                                       │
-                                                                                       ▼
-                                                                        ┌─────────────────────────────┐
-                                                                        │ ERPNext Database & Ledger   │
-                                                                        │ (Journal, Invoice, Payment) │
-                                                                        └─────────────────────────────┘
-```
-
-### 1. The Manager (Orchestrator)
-The brain of the system. It receives natural language instructions and uploaded attachments, maintains context across conversation turns, decomposes complex user demands into prioritized task lists, briefs specialist employees, monitors their execution, and aggregates results into a clean executive summary.
-
-### 2. Ask Desk (Accounting Q&A & Lookups)
-- **Scope:** Read-only intelligence and general accounting questions.
-- **Capabilities:**
-  - Interprets standard accounting standards (IFRS, US GAAP, local tax regulations).
-  - Performs real-time read-only lookups in your ERPNext database (chart of accounts, customer balances, stock valuation, tax rates, vendor status).
-  - Reads and extracts data from uploaded documents, receipts, invoices, and contracts (PDF, DOCX, CSV, Excel, Images).
-- **Restrictions:** Never writes or modifies ledger entries.
-
-### 3. Analyse Desk (Financial Reports & Charts)
-- **Scope:** Quantitative and tabular financial analysis.
-- **Capabilities:**
-  - Analyzes general ledgers, trial balances, sales registers, and cash flows.
-  - Computes liquidity ratios, profitability margins, aging analysis, budget variances, and trend forecasts.
-  - Renders interactive visual charts directly in the chat interface:
-    - **Mermaid.js:** Flowcharts, entity relationships, operational pipelines.
-    - **Chart.js:** Bar charts, line graphs, pie charts, revenue vs. expense comparisons.
-- **Restrictions:** Does not write to ERPNext; operates strictly on provided or queried tabular data.
-
-### 4. Audit Desk (Forensics & Internal Controls)
-- **Scope:** Forensic investigation, control violation detection, and risk scoring.
-- **Capabilities:**
-  - Analyzes transaction populations for anomalies, unauthorized alterations, Benford's Law distribution compliance, and off-hour postings.
-  - Detects duplicate vendor payments, round-number split invoices to evade approval thresholds, and unusual debit/credit combinations.
-  - Produces structured audit issue tables complete with severity ratings (Critical, High, Medium, Low), financial exposure amounts, affected accounts, and actionable remediation steps.
-
-### 5. Reconcile Desk (Bank & Ledger Matching)
-- **Scope:** Autonomous multi-source matching and variance resolution.
-- **Capabilities:**
-  - Compares external bank statements (CSV/Excel/PDF) against the ERPNext Bank Account Ledger.
-  - Reconciles subledgers against general ledger control accounts (Accounts Receivable vs. Debtor Control; Accounts Payable vs. Creditor Control).
-  - Performs 3-way matching across Purchase Orders, Purchase Receipts, and Purchase Invoices.
-  - Classifies unmatched items into timing differences, unrecorded bank charges, direct deposits, or data entry errors.
-  - Outputs settlement proposals ready for the Creator Desk to record.
-
-### 6. Creator Desk (Ledger Writing & ERP Recording)
-- **Scope:** The **only** desk authorized to write transactions into ERPNext.
-- **Capabilities:**
-  - Creates draft or submitted **Journal Entries**, **Payment Entries**, **Sales Invoices**, **Purchase Invoices**, **Customers**, and **Suppliers**.
-  - Performs batch document imports from formatted Excel/CSV files.
-  - Supports amendment, cancellation, and revision workflows on existing records.
-- **Safety Controls:**
-  - **Two-Phase Commit:** Displays an interactive proposal card showing document details, accounts, debit/credit rows, taxes, and exchange rates.
-  - Requires explicit human approval click in the chat before executing the write.
-  - Must satisfy both the ERP user's permissions and the authoritative **Agent Write Policy**.
-
-### 7. Document Generator & Message Dispatcher
-- **Document Generator (`generate_document`):** Converts analysis, audit findings, or reconciliation results into publication-ready files (**PDF**, **Excel `.xlsx`**, **CSV**, **TXT**) provided as instant download links.
-- **Message Dispatcher (`send_message`):**
-  - **Gmail:** Sends formal emails and file attachments directly from your company domain (e.g. `accounts@yourcompany.com`) using secure Google Workspace domain-wide delegation.
-  - **Telegram:** Sends real-time notifications, audit summaries, and file attachments to internal team groups, channels, or individual managers via a dedicated Telegram bot.
-
----
-
-## System Architecture & Data Flow
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Accountant as Accountant / User
-    participant Desk as ERPNext Desk UI (/app/agent-chat)
-    participant FrappeApp as Frappe App (accountant_agent)
-    participant Policy as Agent Write Policy
-    participant Backend as Razyyn AI Agent Engine
-    participant ERP as ERPNext Database
-
-    Accountant->>Desk: "Reconcile statement.csv and create settlement entry"
-    Desk->>FrappeApp: Forward message & uploaded files
-    FrappeApp->>Backend: Authenticated request (Bearer JWT / API Key Hash)
-    
-    rect rgb(240, 245, 255)
-        Note over Backend: Manager Plans Tasks: 1. Reconcile -> 2. Create Entry
-        Backend->>ERP: Read Bank Ledger (Read-Only)
-        Backend->>Backend: Reconcile Desk matches transactions & finds $120 bank fee
-        Backend->>Backend: Creator Desk prepares Journal Entry proposal
-    end
-
-    Backend-->>Desk: Stream reconciliation summary & render Interactive Proposal Card
-    Note over Accountant,Desk: User reviews proposed accounts, amounts, and dates
-    Accountant->>Desk: Click "Approve"
-    Desk->>FrappeApp: Execute write request with idempotency token
-    
-    FrappeApp->>Policy: Validate against Agent Write Policy
-    alt Policy Check Failed
-        Policy-->>Desk: Blocked (e.g., Blocked Account, Amount Exceeded)
-    else Policy Check Passed
-        Policy->>ERP: Write Document as accountant-agent@agent.local
-        ERP-->>FrappeApp: Created JV-2026-00042
-        FrappeApp->>FrappeApp: Record in Agent Write Log (Append-Only)
-        FrappeApp-->>Desk: Render Success Badge & DocLink
-    end
-```
+- **Ask accounting questions & look things up.** Chart of accounts, customer balances, vendor status, tax rates, IFRS/GAAP guidance — answered against your live data.
+- **Analyze your finances.** Ratios, aging, budget variances, and trend analysis, with interactive charts rendered right in the chat.
+- **Audit your ledgers.** Flags anomalies, duplicate payments, round-sum transactions, off-hours postings, and other internal-control red flags, with severity ratings and remediation notes.
+- **Reconcile bank statements.** Upload a statement (CSV/Excel/PDF) and Razyyn AI matches it against your ledger, classifying differences and proposing settlement entries.
+- **Read your documents.** Extracts data from uploaded invoices, receipts, and contracts (PDF, DOCX, CSV, Excel, images).
+- **Prepare and post entries — with your approval.** Journal Entries, Payment Entries, Sales/Purchase Invoices, Customers, and Suppliers are proposed as a clear card showing every debit, credit, tax, and party. Nothing is written to your books until you click **Approve**.
+- **Export & deliver results.** Generates PDF, Excel, CSV, and TXT deliverables, and can send reports and alerts by **Gmail** or **Telegram**.
+- **Zero-credential connection.** No API keys to copy or paste — your ERP connects to Razyyn AI securely in one click.
+- **Fail-closed by default.** Out of the box, the agent has zero write permissions. Every write is bound by both your ERPNext role permissions and a server-enforced write policy you control.
 
 ---
 
@@ -192,13 +53,12 @@ sequenceDiagram
 
 | Component | Requirement |
 |---|---|
-| **Frappe Framework** | Version 15.x |
-| **ERPNext** | Version 15.x |
+| **Frappe Framework** | Version 14.x |
+| **ERPNext** | Version 14.x |
 | **Python** | Python 3.10, 3.11, or 3.12 |
 | **Python Dependencies** | `pymupdf`, `python-docx`, `pandas`, `python-pptx`, `pillow`, `requests` (managed automatically via `pyproject.toml`) |
 | **Database** | MariaDB 10.6+ or PostgreSQL 14+ |
 | **Browser Support** | Modern Chrome, Firefox, Safari, Edge (Desktop & Tablet) |
-| **Agent Server** | Razyyn AI Cloud API or self-hosted backend instance |
 
 ---
 
@@ -208,7 +68,7 @@ sequenceDiagram
 Open a terminal in your bench directory and run:
 ```bash
 cd /path/to/frappe-bench
-bench get-app accountant_agent https://github.com/Marwan-badr543/Razyyn-AI-Frappe --branch Razyyn-AI-Frappe-v15
+bench get-app accountant_agent https://github.com/Marwan-badr543/Razyyn-AI-Frappe --branch Razyyn-AI-Frappe-v14
 ```
 
 ### Step 2: Install the App on Your Site
@@ -222,15 +82,7 @@ This ensures all DocTypes (`Agent Settings`, `Agent Write Policy`, `Agent Write 
 bench --site [your-site-name] migrate
 ```
 
-### Step 4 (optional): Point at a different Agent Backend Server
-The app ships already pointed at the shared Razyyn service (`https://api.razyyn.com`) —
-skip this step unless you run your own agent server (e.g. a local one for
-development). Override it per-site with:
-```bash
-bench --site [your-site-name] set-config accountant_agent_server_url "http://127.0.0.1:8010"
-```
-
-### Step 5: Build Assets & Restart Bench
+### Step 4: Build Assets & Restart Bench
 Compile frontend JavaScript/CSS bundles and reload bench workers:
 ```bash
 bench build --app accountant_agent
@@ -239,9 +91,9 @@ bench restart
 
 ---
 
-## Zero-Credential Onboarding (Connecting Your ERP)
+## Connecting Your ERP
 
-Traditional ERP integrations force administrators to generate API keys, copy passwords across applications, and risk credential leaks. Razyyn AI eliminates this with **Zero-Credential Self-Service Onboarding**.
+Traditional integrations force administrators to generate API keys and copy secrets between apps. Razyyn AI eliminates this with **zero-credential, self-service onboarding**:
 
 ```
   [Open /app/agent-chat] ──► [Sign In / Register] ──► [Click "Connect"] ──► [Ready to Operate]
@@ -263,7 +115,7 @@ Traditional ERP integrations force administrators to generate API keys, copy pas
 
 ---
 
-## Comprehensive Configuration Guide
+## Configuration Guide
 
 ### 1. Agent Settings
 > **Route:** `/app/agent-settings` | **Access:** System Manager
@@ -275,11 +127,10 @@ Traditional ERP integrations force administrators to generate API keys, copy pas
 | **Email** (`email`) | Data | The email address registered with Razyyn AI. | Auto-populated upon sign-in from the chat interface. |
 | **API Key** (`api_key`) | Password | Encrypted platform secret key authenticating requests to Razyyn. | Managed automatically by the onboarding handshake. |
 | **Access Token** (`access_token`) | Password | Bearer JWT token storing active session claims. | Handled automatically during sign-in. |
-| **API Key Fingerprint** (`api_key_hash`) | Data (Hidden) | SHA-256 deterministic hash of the API key used for indexed $O(1)$ database lookups. | System-generated. |
 | **Custom Instructions** (`custom_instructions`) | Long Text (20,000 char max) | Custom behavioral prompt, corporate accounting rules, tax guidelines, or operational tone. | **Recommended:** Input standard operating procedures (e.g., *"Always use FIFO for inventory valuation. Default cost center is 'Main'. Treat invoices over $5,000 with high scrutiny."*). |
 
-#### Visual Resource Usage Dashboard
-The form displays an interactive live dashboard reporting:
+#### Usage Dashboard
+The form displays a live dashboard reporting:
 - **Plan Tier Badge:** `Free`, `Pro`, or `Ultra`.
 - **Daily Limit Usage Bar:** Percentage of your 24-hour quota consumed. Resets every 24 hours.
 - **Billing Cycle Usage Bar:** 30-day cumulative consumption.
@@ -298,10 +149,10 @@ The form displays an interactive live dashboard reporting:
 
 ---
 
-### 2. Agent Write Policy (Authoritative Guardrails)
+### 2. Agent Write Policy (Guardrails for Ledger Writes)
 > **Route:** `/app/agent-write-policy` | **Type:** Single DocType | **Access:** System Manager
 
-The **Agent Write Policy** is your organization's server-side safety harness. It is enforced inside your ERPNext database engine on every write attempt. Even if an AI model hallucinates or an external API is compromised, **no write violating this policy can ever be committed to the database**.
+The **Agent Write Policy** is your organization's server-side safety harness. It is enforced inside your ERPNext database engine on every write attempt — **no write violating this policy can ever be committed to the database**.
 
 #### A. Master Switch Section
 | Field | Type | Default | Description | Best Practice |
@@ -325,7 +176,7 @@ The **Agent Write Policy** is your organization's server-side safety harness. It
 - **Auto-Submit Ceiling Amount (`auto_submit_ceiling_amount`):** Maximum financial total that the agent may submit automatically without interactive confirmation. Enter `0` to require human approval on every submission.
 
 #### C. Blast Radius Limits Section
-Controls the maximum damage potential in the event of automated batch runs.
+Controls the maximum exposure of any single batch run.
 
 | Field | Default | Behavior | Recommended Setting |
 |---|---|---|---|
@@ -379,7 +230,7 @@ Allows Razyyn AI to post notifications and deliver Excel/PDF reports into intern
 ##### Telegram Bot Setup:
 1. Open Telegram, search for **@BotFather**, and send `/newbot`.
 2. Follow prompts to name your bot (e.g. `Acme Finance Bot` with username `acme_finance_bot`).
-3. Copy the HTTP API token provided (e.g. `7891234567:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw`).
+3. Copy the HTTP API token provided.
 4. Create your team group or channel, and add your bot as an **Administrator** with permission to **Post Messages**.
 5. Find the numeric Chat ID:
    - Send any test message in the group.
@@ -399,29 +250,8 @@ Allows Razyyn AI to post notifications and deliver Excel/PDF reports into intern
 ---
 
 ### 4. ERP Role & User Permissions
-Razyyn AI implements a **Double-Gate Security Model**:
 
-```
-           Action Request (e.g. Create Journal Entry)
-                               │
-                               ▼
-        ┌──────────────────────────────────────────────┐
-        │ Gate 1: ERPNext Role Permissions             │
-        │ Does accountant-agent@agent.local have role  │
-        │ permissions to create/submit this DocType?   │
-        └──────────────────────┬───────────────────────┘
-                               │ YES
-                               ▼
-        ┌──────────────────────────────────────────────┐
-        │ Gate 2: Agent Write Policy                   │
-        │ Is Agent Write Policy enabled? DocType       │
-        │ whitelisted? Within blast radius limits?     │
-        │ Account not blocked? Human approved?         │
-        └──────────────────────┬───────────────────────┘
-                               │ YES
-                               ▼
-                    [Transaction Committed]
-```
+Razyyn AI checks two independent layers before any write reaches your database: your ERPNext role permissions, and the **Agent Write Policy** above. A write only goes through if both allow it.
 
 - The app provisions a dedicated system user: `accountant-agent@agent.local` with the role `Accountant Agent`.
 - The `Accountant Agent` role ships with permissions strictly on app-owned metadata (`Agent Write Log`, `Agent Chats`, `Agent Chat History`).
@@ -452,33 +282,33 @@ Maintains a complete record of all outbound emails and Telegram messages dispatc
 
 ---
 
-## Real-World Usage & Prompt Examples
+## Usage Examples
 
 Access Razyyn AI from the ERPNext desk menu or visit `/app/agent-chat`.
 
-### 💬 General Inquiries & Accounting Guidance (Ask Desk)
+### 💬 General Inquiries & Accounting Guidance
 > *"What is our total outstanding Accounts Receivable across all customers as of today, and who are our top 3 overdue debtors?"*
 
 > *"Explain how we should account for software subscription revenue under IFRS 15, and draft the required journal entry pattern."*
 
-### 📊 Financial Analysis & Visualizations (Analyse Desk)
-> *"Analyze our sales performance for Q1 and Q2 this year broken down by item group. Render a Chart.js comparison graph and export the detailed variance analysis to an Excel file."*
+### 📊 Financial Analysis & Visualizations
+> *"Analyze our sales performance for Q1 and Q2 this year broken down by item group. Render a comparison graph and export the detailed variance analysis to an Excel file."*
 
 > *"Calculate our current ratio, quick ratio, and debt-to-equity ratio based on our latest balance sheet, and highlight any liquidity risks."*
 
-### 🔍 Forensic Auditing & Internal Controls (Audit Desk)
+### 🔍 Forensic Auditing & Internal Controls
 > *"Audit all general ledger journals posted in the last 30 days. Flag any round-sum transactions, entries posted outside business hours, and potential duplicate payments to suppliers."*
 
 > *"Perform a Benford's Law analysis on our supplier payments this fiscal year. Summarize anomalies in an audit table and send the findings report to the Finance Team on Telegram."*
 
-### ⚖️ Bank & Ledger Reconciliation (Reconcile Desk)
+### ⚖️ Bank & Ledger Reconciliation
 *(Attach `bank_statement_august.csv` using the paperclip or drag-and-drop)*:
 > *"Reconcile this attached bank statement against our 'HDFC Bank - Current Account' ledger for August 2026. Identify all uncredited deposits, unpresented checks, and missing bank charges."*
 
-### ✍️ Document Recording & Posting (Creator Desk)
+### ✍️ Document Recording & Posting
 > *"Record a payment entry of $3,500 received from customer 'Apex Global' against invoice 'SINV-2026-00120' deposited into 'Main Bank Account'. Send me the confirmation email once posted."*
 
-> *(Razyyn AI will analyze the ledger, format the payment entry, verify invoice balance, present an Interactive Proposal Card in chat, and prompt you to click **Approve** before saving)*.
+> *(Razyyn AI will analyze the ledger, format the payment entry, verify invoice balance, present an interactive proposal card in chat, and prompt you to click **Approve** before saving)*.
 
 ---
 
@@ -486,7 +316,7 @@ Access Razyyn AI from the ERPNext desk menu or visit `/app/agent-chat`.
 
 ### 1. The agent says: *"Recording is disabled"*
 - **Cause:** Either recording is toggled off in `Agent Settings`, or `Agent Write Policy` is disabled.
-- **Resolution:** 
+- **Resolution:**
   1. Go to `Agent Settings` (`/app/agent-settings`) and ensure the status card shows **Ready to record**.
   2. Open `Agent Write Policy` (`/app/agent-write-policy`) and tick **Enable Agent Writes**.
 
@@ -516,6 +346,6 @@ Access Razyyn AI from the ERPNext desk menu or visit `/app/agent-chat`.
 ## License & Support
 
 - **License:** Open-source under the [MIT License](license.txt).
-- **Publisher:** Marwan Badr ([marwanbadr@gmail.com](mailto:marwanbadr@gmail.com)).
-- **Repository:** [https://github.com/Marwan-badr543/Razyyn-AI-Frappe](https://github.com/Marwan-badr543/Razyyn-AI-Frappe) (Branch: `Razyyn-AI-Frappe-v15`)
-- **Marketplace Documentation & Commercial Plans:** Visit [Razyyn AI](https://razyyn.com) for enterprise licenses, hosted cloud solutions, and SLA-backed support.
+- **Publisher:** [Razyyn AI](https://razyyn.com).
+- **Repository:** [Razyyn-AI-Frappe](https://github.com/Marwan-badr543/Razyyn-AI-Frappe) (Branch: `Razyyn-AI-Frappe-v14`)
+- **Website, Plans & Support:** Visit [razyyn.com](https://razyyn.com) for product documentation, pricing plans, and support channels.
