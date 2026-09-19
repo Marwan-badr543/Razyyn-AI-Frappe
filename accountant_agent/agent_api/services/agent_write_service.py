@@ -673,6 +673,7 @@ def build_document_spec(doctype: str) -> dict:
             "read_only": bool(df.read_only),
             "options": df.options,
             "default": df.default,
+            "derived": _is_derived(df),
         }
         if df.fieldtype == "Table":
             child_tables.append(
@@ -717,10 +718,45 @@ def _child_field_spec(child_doctype: str | None) -> list[dict]:
             "reqd": bool(df.reqd),
             "options": df.options,
             "default": df.default,
+            "derived": _is_derived(df),
         }
         for df in meta.fields
         if df.fieldtype not in ("Section Break", "Column Break", "Tab Break", "HTML", "Button")
     ]
+
+
+def _is_derived(df) -> bool:
+    """Whether this system fills the field in by itself when the document saves.
+
+    WHY THE AGENT HAS TO BE TOLD, AND WHAT GOES WRONG WHEN IT IS NOT
+        A field list that says nothing about this reads as "here are the fields
+        you had better supply", and the agent goes looking for every one of
+        them in the database. On the Odoo connector — where a sales invoice
+        derives twenty of its own fields and each of its lines another sixteen
+        — that cost seventy-three failed queries against internal tables on a
+        single two-line invoice, and the payload it finally built duplicated
+        work the system was going to do anyway. The same instinct here sends
+        the agent hunting for an item's income account and a customer's
+        receivable account, both of which this system sets during `validate`.
+
+    WHAT CAN HONESTLY BE DETECTED HERE
+        `fetch_from` is this system's own declaration that a field's value is
+        pulled from a linked record — an item's name from the item, a
+        customer's name from the customer. It is exactly "the system fills this
+        in", published in the metadata, and it is what this reports.
+
+        Fields filled in by a controller's `set_missing_values` instead — an
+        invoice's receivable account, a line's income account and cost centre —
+        carry no such marker, so they are not claimed here. Saying only what is
+        certain is the point: a field wrongly marked derived is one the agent
+        stops supplying, and a document short of a value nobody filled in is
+        worse than a redundant look-up.
+
+    Never `read_only`: that is published separately and means something else —
+    the system OWNS the field and discards what you send. A derived field takes
+    a value when one is sent and supplies its own when none is.
+    """
+    return bool(getattr(df, "fetch_from", None)) and not df.read_only
 
 
 def _supports_dry_run(doctype: str) -> bool:
