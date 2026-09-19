@@ -19,17 +19,14 @@ from frappe import _
 
 from accountant_agent.agent_api.services.agent_api_service import (
 	AuthenticationRequiredError,
-	ClarificationProcessingError,
 	FileTooLargeError,
 	ForbiddenQueryError,
 	InvalidApiKeyError,
-	InvalidPayloadFormatError,
 	MissingParameterError,
 	QueryExecutionError,
 	ResourceNotFoundError,
 	authenticate_by_api_key,
 	build_doctype_schema_summary,
-	process_clarification_request,
 	save_generated_file,
 	validate_and_execute_query,
 )
@@ -123,42 +120,6 @@ def get_doctype_schema(doctype: str | None = None, api_key: str | None = None) -
 		return _set_error_response(404, str(exc))
 	except Exception as exc:
 		return _set_error_response(500, f"Error retrieving DocType schema: {exc}")
-
-
-@frappe.whitelist(allow_guest=True)
-def request_clarification(
-	session_id: str | None = None,
-	questions: list | str | None = None,
-	api_key: str | None = None,
-) -> dict:
-	"""
-	Receive clarification questions from the agent server.
-	Save the questions in the chat history and trigger a real-time event.
-	"""
-	resolved_api_key = _extract_api_key(api_key)
-	resolved_session_id = _extract_param(session_id, "session_id")
-	resolved_questions = _extract_param(questions, "questions")
-
-	try:
-		settings_user = authenticate_by_api_key(resolved_api_key)
-		return process_clarification_request(
-			resolved_session_id, resolved_questions, settings_user
-		)
-
-	except AuthenticationRequiredError:
-		return _set_error_response(401, "Missing API Key. Authentication required.")
-	except InvalidApiKeyError:
-		return _set_error_response(403, "Invalid API Key. Authentication failed.")
-	except MissingParameterError as exc:
-		return _set_error_response(
-			400, f"Missing {exc.parameter_name} parameter."
-		)
-	except ResourceNotFoundError as exc:
-		return _set_error_response(404, str(exc))
-	except InvalidPayloadFormatError as exc:
-		return _set_error_response(400, exc.detail)
-	except ClarificationProcessingError as exc:
-		return _set_error_response(500, exc.detail)
 
 
 @frappe.whitelist(allow_guest=True)

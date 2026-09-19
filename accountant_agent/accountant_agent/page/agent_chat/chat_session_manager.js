@@ -177,9 +177,9 @@ class ChatSessionManager {
 				row.find(".thinking-body-content").show();
 				row.find(".thinking-header-icon").css("transform", "rotate(90deg)");
 
-				this.chat.message_handler.set_button_state("cancel");
+				this.chat.message_handler.set_button_state("working");
 			} else if (this.chat.message_handler.processing_sessions.has(session_id)) {
-				this.chat.message_handler.set_button_state("cancel");
+				this.chat.message_handler.set_button_state("working");
 			} else {
 				this.chat.message_handler.set_button_state("send");
 			}
@@ -366,7 +366,7 @@ class ChatSessionManager {
 				row.find(".thinking-body-content").show();
 				row.find(".thinking-header-icon").css("transform", "rotate(90deg)");
 
-				this.chat.message_handler.set_button_state("cancel");
+				this.chat.message_handler.set_button_state("working");
 			} else {
 				// No live stream in memory (page was reloaded): ask the server
 				// whether the manager still has an unfinished checklist for this
@@ -420,6 +420,13 @@ class ChatSessionManager {
 				state.tasks.length
 			) {
 				this.chat.ui_manager.render_todo_standalone(this.chat.msg_box, state);
+				// A reload mid-run: the manager is still working on this
+				// session, and the composer opens the same way it would have
+				// been open before the reload — with the stop button beside it.
+				if (state.status === "active") {
+					this.chat.ensure_stream(session_id);
+					this.chat.message_handler.set_button_state("working");
+				}
 			}
 		} catch (e) {
 			console.error("Could not restore the task list:", e);

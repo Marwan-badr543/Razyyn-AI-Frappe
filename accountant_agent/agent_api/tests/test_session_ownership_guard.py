@@ -1,14 +1,15 @@
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
-"""Regression tests for the session-ownership guard on clarifications/uploads.
+"""Regression tests for the session-ownership guard on generated-file uploads.
 
 Two bugs live here, one in each direction.
 
-CROSS-SESSION IDOR (the original): ``process_clarification_request`` and
-``save_generated_file`` only checked that a ``session_id`` existed, not that it
-belonged to the caller authenticated by the API key, so any customer's key
-could inject questions into — or attach files to — any other customer's chat.
+CROSS-SESSION IDOR (the original): ``save_generated_file`` (and the desks'
+direct-question receiver, since deleted — a desk's question now reaches the
+customer only through the manager) only checked that a ``session_id`` existed,
+not that it belonged to the caller authenticated by the API key, so any
+customer's key could attach files to any other customer's chat.
 
 THE GUARD THAT REFUSED EVERYONE (the fix these tests now pin): the caller side
 of that comparison was the Agent Settings DOCUMENT NAME (a generated id) while
@@ -23,7 +24,6 @@ from unittest.mock import patch
 from accountant_agent.agent_api.services.agent_api_service import (
 	ResourceNotFoundError,
 	_assert_session_owned_by,
-	process_clarification_request,
 )
 
 SERVICE = "accountant_agent.agent_api.services.agent_api_service"
@@ -65,14 +65,3 @@ class TestSessionOwnershipGuard(TestCase):
 		with chat, settings:
 			with self.assertRaises(ResourceNotFoundError):
 				_assert_session_owned_by("session-1", "3hr0oi1o6q")
-
-	def test_process_clarification_request_rejects_foreign_session(self):
-		chat, settings = _owners("bob@example.com", "alice@example.com")
-		with (
-			chat,
-			settings,
-			patch(f"{SERVICE}.insert_chat_history_record") as insert_mock,
-		):
-			with self.assertRaises(ResourceNotFoundError):
-				process_clarification_request("session-1", "[]", "3hr0oi1o6q")
-			insert_mock.assert_not_called()
