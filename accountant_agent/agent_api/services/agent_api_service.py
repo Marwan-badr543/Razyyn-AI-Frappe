@@ -81,22 +81,6 @@ class QueryExecutionError(Exception):
 		super().__init__(f"SQL Execution Error: {detail}")
 
 
-class ClarificationProcessingError(Exception):
-	"""Raised when clarification request processing fails."""
-
-	def __init__(self, detail: str) -> None:
-		self.detail = detail
-		super().__init__(detail)
-
-
-class InvalidPayloadFormatError(Exception):
-	"""Raised when a payload cannot be parsed into the expected format."""
-
-	def __init__(self, detail: str) -> None:
-		self.detail = detail
-		super().__init__(detail)
-
-
 # ─── Query Safety Policy ────────────────────────────────────────────────────
 #
 # Everything this endpoint executes was written by a language model, and that
@@ -544,7 +528,7 @@ def _assert_session_owned_by(session_id: str, settings_name: str) -> None:
 	"""Raise ResourceNotFoundError unless the caller's key owns that chat session.
 
 	Without this, any holder of a valid Agent Settings API key could pass any
-	other customer's session_id and inject clarification questions or attach
+	other customer's session_id and attach
 	generated files to that customer's chat (cross-session IDOR). The response
 	says "not found" rather than "forbidden" for a session that exists but
 	belongs to someone else, so this endpoint cannot be used to enumerate other
@@ -561,101 +545,6 @@ def _assert_session_owned_by(session_id: str, settings_name: str) -> None:
 	caller = get_settings_owner(settings_name)
 	if not chat_owner or not caller or chat_owner != caller:
 		raise ResourceNotFoundError("Chat session", session_id)
-
-
-# ─── Clarification Request Service ──────────────────────────────────────────
-
-
-def parse_questions_payload(questions_raw) -> list:
-	"""
-	Parse a raw questions payload into a validated list of question dicts.
-
-	Args:
-		questions_raw: Either a JSON string or a list of question dicts.
-
-	Returns:
-		Parsed list of question dicts.
-
-	Raises:
-		InvalidPayloadFormatError: If parsing fails or result is not a list.
-	"""
-	if isinstance(questions_raw, list):
-		return questions_raw
-
-	try:
-		parsed = json.loads(questions_raw)
-	except (json.JSONDecodeError, TypeError) as exc:
-		raise InvalidPayloadFormatError(
-			f"Invalid questions format. Must be a JSON array. Error: {exc}"
-		) from exc
-
-	if not isinstance(parsed, list):
-		raise InvalidPayloadFormatError("questions must be a list / JSON array.")
-
-	return parsed
-
-
-def process_clarification_request(
-	session_id: str,
-	questions_raw,
-	settings_user: str,
-) -> dict:
-	"""
-	Process a clarification request: parse questions, persist to chat history,
-	and broadcast a real-time event.
-
-	Args:
-		session_id: The chat session UUID.
-		questions_raw: Raw questions payload (string or list).
-		settings_user: The authenticated user identifier.
-
-	Returns:
-		dict with keys: success, message.
-
-	Raises:
-		MissingParameterError: If session_id or questions_raw is missing.
-		ResourceNotFoundError: If the chat session does not exist.
-		InvalidPayloadFormatError: If questions cannot be parsed.
-		ClarificationProcessingError: If saving or broadcasting fails.
-	"""
-	if not session_id:
-		raise MissingParameterError("session_id")
-	if not questions_raw:
-		raise MissingParameterError("questions")
-
-	parsed_questions = parse_questions_payload(questions_raw)
-
-	_assert_session_owned_by(session_id, settings_user)
-
-	# Build the JSON content payload for chat history
-	content_payload = {
-		"type": "clarification",
-		"questions": parsed_questions,
-	}
-	content_json = json.dumps(content_payload, ensure_ascii=False)
-
-	try:
-		insert_chat_history_record(session_id, "ai", content_json)
-		update_chat_last_timestamp(session_id)
-
-		# Broadcast real-time notification to the session owner
-		session_owner = frappe.db.get_value("Agent Chats", session_id, "owner")
-		frappe.publish_realtime(
-			event="agent_clarification_requested",
-			message={
-				"session_id": session_id,
-				"questions": parsed_questions,
-				"content": content_json,
-			},
-			user=session_owner,
-		)
-
-		return {
-			"success": True,
-			"message": "Clarification request saved and broadcasted successfully.",
-		}
-	except Exception as exc:
-		raise ClarificationProcessingError(f"Error saving clarification request: {exc}") from exc
 
 
 #: Ceiling on a generated report the agent may push back into the ERP. Reports

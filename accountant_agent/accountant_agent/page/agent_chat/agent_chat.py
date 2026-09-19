@@ -1418,56 +1418,6 @@ def process_agent_message_background(
 						},
 						user=user,
 					)
-				elif current_event == "multi_agent_start":
-					# Fires once, before any sub-agent runs, with the whole
-					# lineup an "auto" classification chained together. This is
-					# the plan a multi-desk run is executing — the client can
-					# show it up front instead of only ever seeing one step at
-					# a time with no sense of how many are coming.
-					frappe.publish_realtime(
-						event="agent_multi_start",
-						message={
-							"session_id": session_id,
-							"agents": data_json.get("agents", []),
-							"total": data_json.get("total", 0),
-						},
-						user=user,
-					)
-				elif current_event == "agent_start":
-					frappe.publish_realtime(
-						event="agent_subagent_start",
-						message={
-							"session_id": session_id,
-							"agent": data_json.get("agent", ""),
-							"index": data_json.get("index", 0),
-							"total": data_json.get("total", 0),
-						},
-						user=user,
-					)
-				elif current_event == "agent_complete":
-					frappe.publish_realtime(
-						event="agent_subagent_complete",
-						message={
-							"session_id": session_id,
-							"agent": data_json.get("agent", ""),
-							"index": data_json.get("index", 0),
-							"total": data_json.get("total", 0),
-						},
-						user=user,
-					)
-				elif current_event == "compilation_start":
-					# Every sub-agent has answered; this is the master desk
-					# writing the one reply out of all of them. A customer
-					# watching the step list stall here without this would read
-					# it as a hang right after the last desk finished.
-					frappe.publish_realtime(
-						event="agent_compilation_start",
-						message={
-							"session_id": session_id,
-							"agents": data_json.get("agents", []),
-						},
-						user=user,
-					)
 				elif current_event == "done":
 					answered = True
 					ai_response = data_json.get("response", "")
@@ -1513,6 +1463,33 @@ def process_agent_message_background(
 							message={"session_id": session_id, "questions": questions},
 							user=user,
 						)
+				elif current_event == "aside":
+					# A MANAGER SENTENCE THAT IS NOT THE TURN'S ANSWER. "Added the
+					# VAT check as step 4", a reply to something the customer
+					# asked while the work ran, the sentence that presents a
+					# waiting step's question. Stored like any message and drawn
+					# as its own bubble above the working one; the run goes on.
+					spoken = data_json.get("text", "")
+					if spoken:
+						save_chat_history(session_id, "ai", spoken)
+						update_chat_timestamp(session_id)
+						frappe.publish_realtime(
+							event="agent_aside",
+							message={"session_id": session_id, "text": spoken},
+							user=user,
+						)
+				elif current_event == "noted":
+					# THE MANAGER HEARD IT MID-RUN. The composer stays open while
+					# the manager works, and a message sent then reaches the run in
+					# progress rather than starting one of its own. The customer's
+					# bubble is already on screen; there is no answer of this
+					# turn's own to wait for, so this turn simply ends.
+					answered = True
+					frappe.publish_realtime(
+						event="agent_message_noted",
+						message={"session_id": session_id},
+						user=user,
+					)
 				elif current_event == "cancelled":
 					# The customer stopped the work. That IS the answer to this
 					# turn; nothing failed and nothing is missing.

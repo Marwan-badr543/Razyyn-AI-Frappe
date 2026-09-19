@@ -986,21 +986,6 @@ class ChatUIManager {
 			let msg_box_was_near_bottom = this.is_near_bottom(msg_box);
 			steps_list.empty();
 
-			// The plan, when this is a multi-desk "auto" run: which desks are
-			// queued, before any of them has produced a single step. Without
-			// this a 3-desk run and a 1-desk run look identical until the
-			// second desk unexpectedly starts.
-			let plan = stream && stream.agents_plan;
-			if (plan && plan.length > 1) {
-				let plan_names = plan.map((a) => this.chat.agent_display_name(a)).join(" → ");
-				steps_list.append(`
-					<div class="thinking-plan-banner">
-						<i class="fa fa-map-signs"></i>
-						<span>${__("Plan")}: ${plan_names}</span>
-					</div>
-				`);
-			}
-
 			if (steps && steps.length > 0) {
 				steps.forEach((step, idx) => {
 					let is_last = idx === steps.length - 1;

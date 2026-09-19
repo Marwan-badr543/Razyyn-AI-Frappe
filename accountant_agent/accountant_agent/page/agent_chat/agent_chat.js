@@ -255,63 +255,31 @@ class AccountantAgentChat {
 			}
 		});
 
-		// The whole lineup of an "auto" multi-desk run, before any of them has
-		// run a single node. Shown as the plan the steps list will fill in —
-		// without it, a 3-desk run looks identical to a 1-desk run until the
-		// second desk unexpectedly starts.
-		frappe.realtime.on("agent_multi_start", (data) => {
-			if (data && data.session_id) {
-				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
-				let stream = this.ensure_stream(data.session_id);
-				stream.agents_plan = data.agents || [];
-
-				if (data.session_id === this.session_manager.session_id) {
-					this.ui_manager.update_stream_status(this.msg_box, stream.bubble_id, stream.status, stream.steps, stream);
-				}
+		// A MANAGER SENTENCE THAT IS NOT THE TURN'S ANSWER: "added the VAT
+		// check as step 4", the reply to something asked while the work ran,
+		// the sentence that presents a waiting step's question. Its own
+		// bubble, above the working one; the working one keeps working.
+		frappe.realtime.on("agent_aside", (data) => {
+			if (!data || !data.session_id || !data.text) return;
+			if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
+			if (data.session_id !== this.session_manager.session_id) return;
+			this.ui_manager.append_message(this.msg_box, "ai", data.text, false, new Date().toISOString());
+			let aside_row = this.msg_box.find(".agent-msg-row").last();
+			let stream = this.active_streams && this.active_streams[data.session_id];
+			let working_row = stream ? this.msg_box.find(`#row-${stream.bubble_id}`) : null;
+			if (working_row && working_row.length) {
+				aside_row.insertBefore(working_row);
 			}
+			this.ui_manager.scroll_to_bottom(this.msg_box);
 		});
 
-		frappe.realtime.on("agent_subagent_start", (data) => {
-			if (data && data.session_id) {
-				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
-				let stream = this.ensure_stream(data.session_id);
-				stream.current_agent = data.agent;
-				let display = `${__("Handing off to")} ${this.agent_display_name(data.agent)} (${data.index}/${data.total})`;
-				stream.status = display;
-				this.push_step(stream, display, 'agent');
-
-				if (data.session_id === this.session_manager.session_id) {
-					this.ui_manager.update_stream_status(this.msg_box, stream.bubble_id, display, stream.steps, stream);
-				}
-			}
-		});
-
-		frappe.realtime.on("agent_subagent_complete", (data) => {
-			if (data && data.session_id) {
-				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
-				let stream = this.ensure_stream(data.session_id);
-				let display = `${this.agent_display_name(data.agent)} ${__("finished")} (${data.index}/${data.total})`;
-				this.push_step(stream, display, 'agent');
-
-				if (data.session_id === this.session_manager.session_id) {
-					this.ui_manager.update_stream_status(this.msg_box, stream.bubble_id, stream.status, stream.steps, stream);
-				}
-			}
-		});
-
-		frappe.realtime.on("agent_compilation_start", (data) => {
-			if (data && data.session_id) {
-				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
-				let stream = this.ensure_stream(data.session_id);
-				stream.current_agent = null;
-				let display = __("Combining every desk's findings into one answer...");
-				stream.status = display;
-				this.push_step(stream, display, 'agent');
-
-				if (data.session_id === this.session_manager.session_id) {
-					this.ui_manager.update_stream_status(this.msg_box, stream.bubble_id, display, stream.steps, stream);
-				}
-			}
+		// THE MANAGER HEARD A MESSAGE SENT WHILE IT WORKED. Nothing to draw:
+		// the customer's bubble is already on screen, no turn of its own was
+		// started, and whatever the manager says back arrives as an aside on
+		// the running turn's stream.
+		frappe.realtime.on("agent_message_noted", (data) => {
+			if (!data || !data.session_id) return;
+			this.message_handler.stop_result_recovery(data.session_id);
 		});
 
 		frappe.realtime.on("agent_node_start", (data) => {
@@ -761,6 +729,9 @@ class AccountantAgentChat {
 								<div class="agent-input-footer-left"></div>
 								<div class="agent-input-footer-right">
 									<div class="agent-char-counter">0 / 10000</div>
+									<button class="agent-stop-btn" id="agent-stop-trigger" title="${__('Stop the work')}" style="display: none;">
+										<svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>
+									</button>
 									<button class="agent-send-btn" id="agent-send-trigger" title="${__('Send Message')}">
 										<svg viewBox="0 0 24 24">
 											<path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
@@ -874,22 +845,22 @@ class AccountantAgentChat {
 		this.textarea.on('keydown', (e) => {
 			if (e.which === 13 && !e.shiftKey) {
 				e.preventDefault();
-				// While the manager is working the composer is closed and the
-				// button is the cancel control, so Enter has nothing to send.
-				let btn = this.layout.find('#agent-send-trigger');
-				if (!btn.hasClass('agent-cancel-btn')) {
-					this.message_handler.send_user_message();
-				}
+				// The composer is open while the manager works: Enter sends,
+				// and a message sent mid-run reaches the manager as a note.
+				this.message_handler.send_user_message();
 			}
 		});
 
 		this.layout.find('#agent-send-trigger').on('click', () => {
-			let btn = this.layout.find('#agent-send-trigger');
-			if (btn.hasClass('agent-cancel-btn')) {
-				this.message_handler.cancel_agent_execution();
-			} else {
-				this.message_handler.send_user_message();
-			}
+			this.message_handler.send_user_message();
+		});
+
+		// The stop button is its own control now, shown only while a run is
+		// in flight. It used to be the send button wearing a different face,
+		// which is why the composer had to close: one button cannot both send
+		// a word to the manager and stop the work.
+		this.layout.find('#agent-stop-trigger').on('click', () => {
+			this.message_handler.cancel_agent_execution();
 		});
 
 		this.layout.find('.agent-lang-selector').on('change', (e) => {
@@ -1112,9 +1083,6 @@ class AccountantAgentChat {
 				// nothing here is persisted, so a reload loses it exactly
 				// like it loses the steps list.
 				current_agent: null,
-				// The full lineup for an auto multi-desk run, if one started.
-				// null means "not a multi-desk run" (or not known yet).
-				agents_plan: null,
 				start_time: Date.now(),
 				elapsed_seconds: 0
 			};
@@ -1171,16 +1139,8 @@ class AccountantAgentChat {
 	}
 
 	// Human name for a desk key, for the live badge and the hand-off lines.
-	// Reads from the same AGENT_DEFINITIONS the selector dropdown uses, so
-	// the two never say different things about what "Analyse Agent" means.
 	agent_display_name(agent_key) {
 		if (!agent_key) return __("Razyyn");
-		let defs = (this.agent_selector && this.agent_selector.AGENT_DEFINITIONS) || {};
-		// Own-property, for the same reason as the table below: a plain lookup
-		// on "__proto__" returns Object.prototype, which is truthy, and the
-		// name off it is `undefined` — which is what the badge then showed.
-		let def = Object.prototype.hasOwnProperty.call(defs, agent_key) ? defs[agent_key] : null;
-		if (def && def.name) return def.name;
 		// Everyone the agent server streams under, with the name they go by in
 		// the firm. "master" is the manager who reads the request, decides who
 		// does what and writes back with the answer — a FINANCE MANAGER. It

@@ -239,12 +239,32 @@ class ChatMessageHandler {
 	// edit-and-resubmit -- only the RPC method/params differ, so both call
 	// this instead of keeping two copies of the same ~100 lines.
 	async _dispatch_to_agent(active_session_id, xcall_method, xcall_params) {
+		// A MESSAGE TO A RUN IN FLIGHT IS A NOTE TO THE MANAGER, NOT A TURN.
+		// The composer stays open while the manager works, and the server
+		// decides what a message is — the run's own stream carries whatever the
+		// manager says back, as an aside. So there is no bubble to draw, no
+		// timer to start and no result to poll for: the customer's own bubble
+		// is already on screen, and the server answers "noted".
+		let a_run_is_in_flight = !!(this.chat.active_streams && this.chat.active_streams[active_session_id]);
+		if (a_run_is_in_flight) {
+			try {
+				return await frappe.xcall(xcall_method, xcall_params);
+			} catch (err) {
+				console.error("Message to the working manager failed:", err);
+				frappe.show_alert({
+					message: __("That did not reach the manager. Please send it again."),
+					indicator: "orange",
+				});
+				return;
+			}
+		}
+
 		// Only touch the stream bubble / composer when the chat still open on
 		// screen is the one this turn belongs to. `send_chat_message` awaits a
 		// draft-creation RPC before reaching here, and the customer can switch
 		// chats during that wait -- bootstrapping a bubble unconditionally would
 		// then draw "Thinking..." into whatever OTHER chat they switched to and
-		// lock its composer to "cancel". `processing_sessions` is the only
+		// mark its composer as working. `processing_sessions` is the only
 		// state that must survive a switch away, so it stays unguarded.
 		if (this.chat.session_manager.session_id === active_session_id) {
 			let stream_id = `stream-${this.chat.generate_uuid()}`;
@@ -271,7 +291,7 @@ class ChatMessageHandler {
 				__("Thinking..."),
 				[{ name: __("Thinking..."), type: "node" }]
 			);
-			this.set_button_state("cancel");
+			this.set_button_state("working");
 		}
 
 		this.processing_sessions.add(active_session_id);
@@ -458,10 +478,12 @@ class ChatMessageHandler {
 			});
 			return;
 		}
-		// One active turn per session at a time, same rule as sending a fresh
-		// message: an edit while a run is in flight would race the discarded
-		// run's reply against the regenerated one over the same DOM.
-		if (this.processing_sessions.has(session_id)) {
+		// One active turn per session at a time. An edit while a run is in
+		// flight would race the discarded run's reply against the regenerated
+		// one over the same DOM — a fresh message mid-run is a note to the
+		// manager, but an edit is a whole new turn, and that has to wait.
+		if (this.processing_sessions.has(session_id) ||
+			(this.chat.active_streams && this.chat.active_streams[session_id])) {
 			frappe.show_alert({
 				message: __("Please wait for the current response to finish."),
 				indicator: "orange",
@@ -534,25 +556,27 @@ class ChatMessageHandler {
 	// One request per session at a time: the customer sends, watches the
 	// checklist, and speaks again when the work stops — either because it
 	// finished, because it is waiting on them (a question or an approval), or
-	// because they cancelled it. Every one of those puts the button back to
-	// 'send' and reopens the composer, so nothing here needs to know which.
+	// because they cancelled it. Every one of those puts the composer back to
+	// 'send' and hides the stop button, so nothing here needs to know which.
 	set_button_state(state) {
-		let btn = this.chat.layout.find("#agent-send-trigger");
-		if (state === "cancel") {
-			btn.removeClass("agent-send-btn").addClass("agent-cancel-btn");
-			btn.attr("title", __("Cancel Execution"));
-			btn.html(`<svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>`);
-			this.chat.textarea.prop("disabled", true);
-			this.chat.textarea.attr("placeholder", __("Working — you can cancel at any time."));
+		// TWO STATES, AND THE COMPOSER IS OPEN IN BOTH. "working" is a run in
+		// flight: the textarea stays enabled — whatever the customer types goes
+		// to the manager, who reads it while the work runs — and a separate
+		// stop button appears beside send. Only the attach button closes: a file
+		// sent mid-run lands nowhere a running step can see it. "send" is idle.
+		let stop = this.chat.layout.find("#agent-stop-trigger");
+		let send = this.chat.layout.find("#agent-send-trigger");
+		send.prop("disabled", false).css("opacity", 1);
+		this.chat.textarea.prop("disabled", false);
+		if (state === "working") {
+			stop.show();
+			this.chat.textarea.attr(
+				"placeholder",
+				__("The manager is working — you can still write to it.")
+			);
 			this.chat.layout.find(".agent-attach-btn").prop("disabled", true).css("opacity", 0.5);
 		} else {
-			btn.removeClass("agent-cancel-btn").addClass("agent-send-btn");
-			btn.attr("title", __("Send Message"));
-			btn.html(
-				`<svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>`
-			);
-			btn.prop("disabled", false).css("opacity", 1);
-			this.chat.textarea.prop("disabled", false);
+			stop.hide();
 			this.chat.textarea.attr(
 				"placeholder",
 				__("Type your financial question or query here...")
