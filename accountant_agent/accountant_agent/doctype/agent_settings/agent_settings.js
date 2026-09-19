@@ -30,6 +30,461 @@ function trigger_usage_load(frm) {
 	}
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Company accounting knowledge
+//
+// The company's own policy PDF, and the jurisdiction whose law the agent
+// applies. Both are read by the agent's helpers when it is asked what the
+// company's rules or the local requirements say, so what is on this card is
+// what the agent believes about this business.
+//
+// WHAT WAS WRONG WITH THE PREVIOUS CARD
+//   * The country was a 75-pixel box asking for two letters. A mistyped code is
+//     not a cosmetic slip: it selects which country's accounting law is
+//     retrieved, so "AE" typed for Egypt answers under the wrong jurisdiction
+//     and nothing anywhere reports an error. It is a list now, fetched from the
+//     platform so this file holds no copy of it, searchable by name.
+//   * A bare file input with no filename, no size check and no progress. The
+//     customer pressed Upload and watched nothing happen for thirty seconds.
+//   * Every failure read the same. `if (!response.ok) throw new Error(generic)`
+//     discarded the server's reason, so "this PDF has no searchable text",
+//     "larger than 40 MB" and "your session expired" were one sentence that
+//     helped with none of them.
+//   * Nothing said what had been indexed. A policy that uploaded but extracted
+//     two pages out of sixty looked identical to one that worked.
+//   * Delete had no confirmation, on a document that has to be re-uploaded to
+//     come back.
+// ─────────────────────────────────────────────────────────────────────────────
+
+frappe.ui.form.on("Agent Settings", {
+	refresh(frm) {
+		if (!frm.is_new() && agent_email_of(frm)) render_company_knowledge(frm);
+	},
+});
+
+//: Injected from here rather than registered as an app stylesheet, so this card
+//: needs no asset build to look right on a site that already has the app.
+//: Idempotent: the element is identified, and a second call finds it.
+const _KNOWLEDGE_STYLE_ID = "agent-knowledge-card-styles";
+
+function ensure_knowledge_styles() {
+	if (document.getElementById(_KNOWLEDGE_STYLE_ID)) return;
+	const style = document.createElement("style");
+	style.id = _KNOWLEDGE_STYLE_ID;
+	style.textContent = `
+/* ─────────────────────────────────────────────────────────────────────────────
+   Company accounting knowledge card (Agent Settings)
+
+   Styled here rather than in inline attributes so it inherits the site's own
+   light/dark variables instead of hard-coding a palette that inverts badly.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.agent-company-knowledge { margin: 18px 0; width: 100%; }
+
+.agent-knowledge-card {
+	border: 1px solid var(--border-color, #e5e7eb);
+	border-radius: 12px;
+	background: var(--card-bg, #ffffff);
+	padding: 20px;
+	box-shadow: 0 4px 15px rgba(0, 0, 0, 0.03);
+}
+
+.agent-knowledge-loading { color: var(--text-muted, #6b7280); font-size: 13px; }
+
+.agent-knowledge-head h4 { margin: 0 0 6px; font-size: 16px; font-weight: 700; }
+.agent-knowledge-head p {
+	margin: 0;
+	font-size: 13px;
+	line-height: 1.55;
+	color: var(--text-muted, #6b7280);
+}
+
+.agent-knowledge-row {
+	margin-top: 18px;
+	padding-top: 16px;
+	border-top: 1px solid var(--border-color, #eceff3);
+}
+.agent-knowledge-row > label {
+	display: block;
+	font-size: 13px;
+	font-weight: 600;
+	margin-bottom: 8px;
+	color: var(--text-color, #374151);
+}
+.agent-knowledge-row > small {
+	display: block;
+	margin-top: 8px;
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--text-muted, #6b7280);
+}
+
+.agent-knowledge-control {
+	display: flex;
+	gap: 10px;
+	align-items: center;
+	flex-wrap: wrap;
+}
+.agent-knowledge-control .company-country { max-width: 340px; }
+.agent-knowledge-progress { font-size: 12.5px; }
+
+.agent-knowledge-doc {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 14px;
+	padding: 14px 16px;
+	border: 1px solid var(--border-color, #e5e7eb);
+	border-radius: 10px;
+	background: var(--bg-color, #f9fafb);
+}
+.agent-knowledge-doc-main { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.agent-knowledge-doc.is-empty { display: flex; align-items: center; gap: 12px; }
+.agent-knowledge-doc-title {
+	font-size: 13.5px;
+	font-weight: 600;
+	color: var(--text-color, #111827);
+	overflow-wrap: anywhere;
+}
+.agent-knowledge-doc-meta { font-size: 12px; color: var(--text-muted, #6b7280); margin-top: 2px; }
+
+.agent-knowledge-dot {
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	flex-shrink: 0;
+	display: inline-block;
+}
+.agent-knowledge-dot.is-good { background: #10a37f; }
+.agent-knowledge-dot.is-idle { background: #d1d5db; }
+
+.agent-knowledge-drop {
+	border: 1.5px dashed var(--border-color, #d1d5db);
+	border-radius: 10px;
+	padding: 18px;
+	text-align: center;
+	transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.agent-knowledge-drop.is-over {
+	border-color: #10a37f;
+	background: rgba(16, 163, 127, 0.06);
+}
+.agent-knowledge-drop-inner { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.agent-knowledge-drop-inner .fa { font-size: 22px; color: var(--text-muted, #9ca3af); }
+.agent-knowledge-drop-inner > div { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.agent-knowledge-drop-inner small { font-size: 12px; line-height: 1.5; color: var(--text-muted, #6b7280); max-width: 460px; }
+.agent-knowledge-filename { font-size: 12.5px; overflow-wrap: anywhere; }
+
+.agent-knowledge-alert {
+	margin-top: 16px;
+	padding: 11px 14px;
+	border-radius: 8px;
+	font-size: 13px;
+	line-height: 1.5;
+}
+.agent-knowledge-alert.is-bad { background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
+.agent-knowledge-alert.is-good { background: #d1fae5; color: #047857; border: 1px solid #a7f3d0; }
+
+@media (max-width: 640px) {
+	.agent-knowledge-doc { flex-direction: column; align-items: flex-start; }
+	.agent-knowledge-control .company-country { max-width: 100%; width: 100%; }
+}
+`;
+	document.head.appendChild(style);
+}
+
+//: Fetched once per page load. 249 countries is a big enough list to be worth
+//: not re-requesting on every redraw, and small enough to keep in memory.
+let _country_cache = null;
+
+function company_knowledge_container(frm) {
+	let $found = $(frm.wrapper).find(".agent-company-knowledge");
+	if ($found.length) return $found;
+	let $container = $('<div class="agent-company-knowledge"></div>');
+	const anchor = frm.fields_dict.write_setup_html || frm.fields_dict.custom_instructions;
+	if (anchor && anchor.wrapper) $container.insertAfter($(anchor.wrapper));
+	else $container.appendTo($(frm.wrapper).find(".form-page").last());
+	return $container;
+}
+
+function knowledge_error(error) {
+	// Frappe wraps a thrown server message in `_server_messages`; a FastAPI
+	// refusal relayed by our own method comes back as `exception`/`message`.
+	// Whichever shape it is, the customer gets the actual reason.
+	const data = (error && error.responseJSON) || {};
+	let messages = [];
+	try {
+		messages = JSON.parse(data._server_messages || "[]").map((entry) => {
+			try { return JSON.parse(entry).message; } catch (e) { return entry; }
+		});
+	} catch (e) { messages = []; }
+	const text = messages.filter(Boolean).join(" ")
+		|| data.message
+		|| (data.exception || "").split(":").slice(1).join(":").trim()
+		|| (error && error.message)
+		|| __("The request was refused.");
+	return frappe.utils.escape_html(String(text)).replace(/<[^>]*>/g, "");
+}
+
+function render_company_knowledge(frm) {
+	ensure_knowledge_styles();
+	const email = agent_email_of(frm);
+	const $box = company_knowledge_container(frm);
+	$box.html(`<div class="agent-knowledge-card agent-knowledge-loading">
+		<i class="fa fa-spinner fa-spin"></i> ${__("Loading your company knowledge...")}</div>`);
+
+	frappe.call({
+		method: "accountant_agent.knowledge.get_company_knowledge",
+		args: { email },
+		callback(r) {
+			const data = r.message || {};
+			if (Array.isArray(data.countries) && data.countries.length) _country_cache = data.countries;
+			draw_company_knowledge(frm, $box, email, data);
+		},
+		error(err) {
+			$box.html(`<div class="agent-knowledge-card">
+				<h4>${__("Company accounting knowledge")}</h4>
+				<div class="agent-knowledge-alert is-bad">${knowledge_error(err)}</div>
+				<button class="btn btn-default btn-sm retry-knowledge">${__("Try again")}</button>
+			</div>`);
+			$box.find(".retry-knowledge").on("click", () => render_company_knowledge(frm));
+		},
+	});
+}
+
+function country_options(selected) {
+	const list = _country_cache || [{ code: selected || "EG", name: selected || "EG" }];
+	return list
+		.map((c) => {
+			const chosen = c.code === selected ? " selected" : "";
+			return `<option value="${frappe.utils.escape_html(c.code)}"${chosen}>` +
+				`${frappe.utils.escape_html(c.name)} (${frappe.utils.escape_html(c.code)})</option>`;
+		})
+		.join("");
+}
+
+function draw_company_knowledge(frm, $box, email, data) {
+	const policy = (data.documents || []).find((item) => item.scope === "company");
+	const country = data.country_code || "EG";
+	const esc = (value) => frappe.utils.escape_html(String(value == null ? "" : value));
+
+	const status = policy
+		? `<div class="agent-knowledge-doc">
+				<div class="agent-knowledge-doc-main">
+					<span class="agent-knowledge-dot is-good"></span>
+					<div>
+						<div class="agent-knowledge-doc-title">${esc(policy.title)}</div>
+						<div class="agent-knowledge-doc-meta">${__("In use by the agent")} ·
+							${esc(policy.page_count)} ${__("pages")} ·
+							${esc(policy.chunk_count)} ${__("searchable sections")}</div>
+					</div>
+				</div>
+				<button class="btn btn-default btn-sm delete-company-policy"
+						data-id="${esc(policy.document_id)}"
+						data-title="${esc(policy.title)}">${__("Remove")}</button>
+			</div>`
+		: `<div class="agent-knowledge-doc is-empty">
+				<span class="agent-knowledge-dot is-idle"></span>
+				<div>
+					<div class="agent-knowledge-doc-title">${__("No policy uploaded yet")}</div>
+					<div class="agent-knowledge-doc-meta">${__("The agent will work from your ledger and general accounting practice until you add one.")}</div>
+				</div>
+			</div>`;
+
+	$box.html(`
+		<div class="agent-knowledge-card">
+			<div class="agent-knowledge-head">
+				<h4>${__("Company accounting knowledge")}</h4>
+				<p>${__("What the agent should know about how YOUR business keeps its books — your accounting policy, your approval rules, your chart conventions. It reads this before answering questions about your own rules.")}</p>
+			</div>
+
+			<div class="agent-knowledge-row">
+				<label for="agent-knowledge-country">${__("Country whose accounting rules apply")}</label>
+				<div class="agent-knowledge-control">
+					<select id="agent-knowledge-country" class="form-control company-country">
+						${country_options(country)}
+					</select>
+					<button class="btn btn-default save-company-country" disabled>${__("Save")}</button>
+				</div>
+				<small>${__("Chosen from the countries the platform supports. The agent applies this country's requirements over general accounting guidance.")}</small>
+			</div>
+
+			<div class="agent-knowledge-row">
+				<label>${__("Your accounting policy")}</label>
+				${status}
+			</div>
+
+			<div class="agent-knowledge-row">
+				<div class="agent-knowledge-drop">
+					<input type="file" class="company-policy-file" accept=".pdf,application/pdf" hidden>
+					<div class="agent-knowledge-drop-inner">
+						<i class="fa fa-file-pdf-o"></i>
+						<div>
+							<button class="btn btn-default btn-sm choose-company-policy">${__("Choose a PDF")}</button>
+							<span class="agent-knowledge-filename text-muted">${__("or drop one here")}</span>
+						</div>
+						<small>${__("Searchable text PDF, up to 40 MB. Scans and photographs of pages are not accepted — the agent reads the text, it does not look at the picture.")}</small>
+					</div>
+				</div>
+				<div class="agent-knowledge-control">
+					<button class="btn btn-primary upload-company-policy" disabled>
+						${policy ? __("Replace policy") : __("Upload policy")}</button>
+					<span class="agent-knowledge-progress text-muted"></span>
+				</div>
+				${policy ? `<small>${__("Uploading a new PDF replaces the current one. The old policy stops being used immediately.")}</small>` : ""}
+			</div>
+
+			<div class="agent-knowledge-alert" hidden></div>
+		</div>`);
+
+	bind_company_knowledge_actions(frm, $box, email, country);
+}
+
+function bind_company_knowledge_actions(frm, $box, email, saved_country) {
+	const $alert = $box.find(".agent-knowledge-alert");
+	const $file = $box.find(".company-policy-file");
+	const $upload = $box.find(".upload-company-policy");
+	const $filename = $box.find(".agent-knowledge-filename");
+	const $progress = $box.find(".agent-knowledge-progress");
+	const $country = $box.find(".company-country");
+	const $saveCountry = $box.find(".save-company-country");
+
+	const say = (message, kind) => {
+		$alert.removeClass("is-bad is-good").addClass(kind === "error" ? "is-bad" : "is-good");
+		$alert.text(message).prop("hidden", false);
+	};
+	const quiet = () => $alert.prop("hidden", true).text("");
+
+	// ── country ──────────────────────────────────────────────────────────────
+	// Saved on a button, not on change: the platform rate-limits this route
+	// because it is the same one that changes a password, and a dropdown that
+	// wrote on every keystroke-scroll would spend that budget on nothing.
+	$country.on("change", function () {
+		$saveCountry.prop("disabled", this.value === saved_country);
+		quiet();
+	});
+	$saveCountry.on("click", function () {
+		const code = $country.val();
+		const $button = $(this);
+		$button.prop("disabled", true).text(__("Saving..."));
+		frappe.call({
+			method: "accountant_agent.knowledge.set_company_country",
+			args: { email, country_code: code },
+			callback: () => {
+				saved_country = code;
+				$button.text(__("Save"));
+				say(__("Country saved. The agent now applies {0}.", [$country.find("option:selected").text()]), "ok");
+			},
+			error: (err) => {
+				$button.prop("disabled", false).text(__("Save"));
+				say(knowledge_error(err), "error");
+			},
+		});
+	});
+
+	// ── choosing the file ────────────────────────────────────────────────────
+	const MAX_BYTES = 40 * 1024 * 1024;
+	const accept = (file) => {
+		if (!file) return;
+		if (!/\.pdf$/i.test(file.name)) {
+			say(__("That is not a PDF. Export your policy as a PDF and try again."), "error");
+			return;
+		}
+		if (file.size > MAX_BYTES) {
+			say(__("That PDF is {0} MB. The limit is 40 MB.", [(file.size / 1048576).toFixed(1)]), "error");
+			return;
+		}
+		quiet();
+		$filename.text(`${file.name} (${(file.size / 1048576).toFixed(1)} MB)`);
+		$upload.prop("disabled", false);
+	};
+
+	$box.find(".choose-company-policy").on("click", (e) => { e.preventDefault(); $file.trigger("click"); });
+	$file.on("change", function () { accept(this.files[0]); });
+
+	const $drop = $box.find(".agent-knowledge-drop");
+	$drop.on("dragover", (e) => { e.preventDefault(); $drop.addClass("is-over"); });
+	$drop.on("dragleave drop", () => $drop.removeClass("is-over"));
+	$drop.on("drop", (e) => {
+		e.preventDefault();
+		const dropped = e.originalEvent.dataTransfer.files[0];
+		if (dropped) { $file[0].files = e.originalEvent.dataTransfer.files; accept(dropped); }
+	});
+
+	// ── uploading ────────────────────────────────────────────────────────────
+	$upload.on("click", function () {
+		const file = $file[0].files[0];
+		if (!file) return;
+		const $button = $(this);
+		const form = new FormData();
+		form.append("email", email);
+		form.append("title", "Company accounting policy");
+		form.append("file", file, file.name);
+
+		$button.prop("disabled", true);
+		$saveCountry.prop("disabled", true);
+		quiet();
+		// Reading a PDF and indexing it takes real seconds. Say so, and keep
+		// saying it, rather than leaving a disabled button and a still page.
+		$progress.text(__("Reading the PDF and indexing it — this can take up to a minute..."));
+
+		// XHR rather than fetch, for the one thing fetch cannot report: upload
+		// progress. A 40 MB policy over a slow office link is a minute of
+		// silence otherwise.
+		const request = new XMLHttpRequest();
+		request.open("POST", "/api/method/accountant_agent.knowledge.upload_company_knowledge");
+		request.setRequestHeader("X-Frappe-CSRF-Token", frappe.csrf_token);
+		request.upload.onprogress = (event) => {
+			if (!event.lengthComputable) return;
+			const percent = Math.round((event.loaded / event.total) * 100);
+			$progress.text(percent < 100
+				? __("Sending... {0}%", [percent])
+				: __("Reading the PDF and indexing it..."));
+		};
+		request.onload = () => {
+			$progress.text("");
+			$button.prop("disabled", false);
+			let body = {};
+			try { body = JSON.parse(request.responseText || "{}"); } catch (e) { body = {}; }
+			if (request.status >= 200 && request.status < 300) {
+				const indexed = body.message || {};
+				frappe.show_alert({
+					message: __("Policy indexed: {0} pages, {1} searchable sections.",
+						[indexed.page_count || "?", indexed.chunk_count || "?"]),
+					indicator: "green",
+				}, 7);
+				render_company_knowledge(frm);
+				return;
+			}
+			say(knowledge_error({ responseJSON: body }), "error");
+		};
+		request.onerror = () => {
+			$progress.text("");
+			$button.prop("disabled", false);
+			say(__("The upload did not reach the server. Check your connection and try again."), "error");
+		};
+		request.send(form);
+	});
+
+	// ── removing ─────────────────────────────────────────────────────────────
+	$box.find(".delete-company-policy").on("click", function () {
+		const id = $(this).data("id");
+		const title = $(this).data("title");
+		frappe.confirm(
+			__("Remove \"{0}\"? The agent will stop applying your policy, and you would have to upload the PDF again to restore it.", [title]),
+			() => frappe.call({
+				method: "accountant_agent.knowledge.delete_company_knowledge",
+				args: { email, document_id: id },
+				callback: () => {
+					frappe.show_alert({ message: __("Policy removed"), indicator: "orange" });
+					render_company_knowledge(frm);
+				},
+				error: (err) => say(knowledge_error(err), "error"),
+			})
+		);
+	});
+}
+
 function get_usage_container(frm) {
 	if (frm.fields_dict.usage_html && frm.fields_dict.usage_html.wrapper) {
 		return $(frm.fields_dict.usage_html.wrapper);

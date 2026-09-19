@@ -36,7 +36,7 @@ import json
 from typing import Any, Optional
 
 import frappe
-from frappe.utils import add_to_date
+from frappe.utils import add_to_date, nowtime
 
 # Savepoint identifiers are interpolated into SQL by frappe.db.savepoint, so
 # they must never derive from caller input. A fixed prefix plus a monotonic
@@ -369,8 +369,17 @@ def insert_document(payload: dict) -> Any:
     No ignore_permissions. insert() runs check_permission("create"),
     _validate_mandatory(), _validate_links(), validate_workflow() and the
     customer's own server scripts. That chain is the product.
+
+    A POSTING DATE THE CALLER SUPPLIED IS THE CALLER'S. Read
+    `_KEEP_THE_DOCUMENTS_OWN_DATE` below: without the flag, validate() moves
+    the date to now — so "record the invoice dated last month" quietly lands in
+    this month, in a period that may already be closed. Pinned only when a date
+    was actually named; a document with no date asked for is correctly dated
+    now.
     """
     doc = frappe.get_doc(payload)
+    if _DATE_FIELD in (payload or {}):
+        keep_the_documents_own_date(doc, "recording")
     doc.insert()
     return doc
 
@@ -398,6 +407,58 @@ def insert_document(payload: dict) -> Any:
 #: one would post something nobody agreed to.
 _KEEP_THE_DOCUMENTS_OWN_DATE = "set_posting_time"
 
+#: The date itself, and the time that goes with it.
+_DATE_FIELD = "posting_date"
+_TIME_FIELD = "posting_time"
+
+
+def keep_the_documents_own_date(doc: Any, what_is_happening: str) -> None:
+    """Stop this write from silently moving the document's posting date.
+
+    EVERY WRITE THAT RUNS validate() NEEDS THIS, NOT ONLY A SUBMIT. save(),
+    submit() and insert() all run it, and it is validate() that does the
+    re-dating — so the same defect that made posting a dated document
+    impossible also lands on editing one and on recording a back-dated one. It
+    showed up as the document refusing ITSELF over a field nobody had touched:
+    a draft raised yesterday, edited today, acquires today's posting date while
+    its due date stays where it was, and
+
+        "Due Date cannot be before Posting / Supplier Invoice Date"
+
+    comes back about an edit to a line item.
+
+    WHY PINNING IS THE FIX AND NOT A WORKAROUND. A posting date is an
+    accounting fact and moving it into another period on the way through a save
+    is a real error. The client approved a card showing the date the document
+    carries; writing a different one records something nobody agreed to.
+
+    Guarded by has_field, so a document type without the flag is untouched and
+    one nobody has seen yet is handled by what it declares rather than by a
+    list of names kept somewhere else. A document with the flag already set is
+    left alone — it is already saying what this says.
+    """
+    if not doc.meta.has_field(_KEEP_THE_DOCUMENTS_OWN_DATE):
+        return
+    if doc.get(_KEEP_THE_DOCUMENTS_OWN_DATE):
+        return
+    if not doc.get(_DATE_FIELD):
+        # Nothing to keep. Pinning here would freeze an empty date rather than
+        # let the system supply the one it is about to.
+        return
+
+    doc.set(_KEEP_THE_DOCUMENTS_OWN_DATE, 1)
+    # THE TIME TRAVELS WITH THE DATE. Pinning holds both, and a caller who
+    # named a date named no time — left empty, the document carries a date with
+    # no hour against it, which orders wrongly against everything posted the
+    # same day.
+    if doc.meta.has_field(_TIME_FIELD) and not doc.get(_TIME_FIELD):
+        doc.set(_TIME_FIELD, nowtime())
+    frappe.logger().info(
+        f"Pinned the posting date of {doc.get('doctype')} "
+        f"{doc.get('name') or '(new)'} before {what_is_happening} it; this "
+        "write would otherwise have moved it to today."
+    )
+
 
 def submit_document(doctype: str, docname: str) -> Any:
     """Submit an existing document, as it stands. Runs check_permission("submit").
@@ -405,19 +466,7 @@ def submit_document(doctype: str, docname: str) -> Any:
     Read `_KEEP_THE_DOCUMENTS_OWN_DATE` above before changing anything here.
     """
     doc = frappe.get_doc(doctype, docname)
-
-    # Guarded by has_field, so a document type without the flag is untouched
-    # and a document type nobody has seen yet is handled by what it declares
-    # rather than by a list of names kept somewhere else.
-    if doc.meta.has_field(_KEEP_THE_DOCUMENTS_OWN_DATE) and not doc.get(
-        _KEEP_THE_DOCUMENTS_OWN_DATE
-    ):
-        doc.set(_KEEP_THE_DOCUMENTS_OWN_DATE, 1)
-        frappe.logger().info(
-            f"Pinned the posting date of {doctype} {docname} before submitting it; "
-            "submit would otherwise have moved it to today."
-        )
-
+    keep_the_documents_own_date(doc, "posting")
     doc.submit()
     return doc
 
@@ -431,12 +480,52 @@ def cancel_document(doctype: str, docname: str, reason: str | None) -> Any:
     return doc
 
 
+def read_docstatus(doctype: str, docname: str) -> int:
+    """Where one document stands right now, read inside the caller's transaction.
+
+    Its own function because the answer has to be taken at the last possible
+    moment. The agent checks a document is a draft before it proposes the
+    change, a person then approves it, and time passes — somebody may well have
+    posted it in between.
+    """
+    return int(frappe.db.get_value(doctype, docname, "docstatus") or 0)
+
+
+def update_document(doctype: str, docname: str, payload: dict) -> Any:
+    """Change a draft document's own values, through the Document API.
+
+    No ignore_permissions. save() runs check_permission("write"),
+    _validate_mandatory(), _validate_links(), validate_workflow() and the
+    customer's own server scripts, exactly as insert() does for a creation —
+    and "write" is a different grant from "create": a role may be allowed to
+    raise a draft and not to alter one.
+
+    A CHILD TABLE SUPPLIED REPLACES THE ONE THE DOCUMENT HAS. That is this
+    framework's own behaviour for `update`, and it is the honest one: there is
+    no way to address a single line of a table by identity, so the caller reads
+    the table, applies its change and sends the whole of it back.
+
+    WHETHER THE DOCUMENT MAY BE CHANGED AT ALL IS NOT DECIDED HERE. It is a
+    policy question — see `update_existing_document` — and this layer's job is
+    the Document API call.
+    """
+    doc = frappe.get_doc(doctype, docname)
+    doc.update(payload or {})
+    # AFTER the caller's values, never before: a change that moves the posting
+    # date deliberately is the caller's to make, and this only holds whatever
+    # date the document is left carrying.
+    keep_the_documents_own_date(doc, "changing")
+    doc.save()
+    return doc
+
+
 def amend_document(doctype: str, docname: str, payload: dict) -> Any:
     """Amend a cancelled document into a new one carrying amended_from."""
     source = frappe.get_doc(doctype, docname)
     amended = frappe.copy_doc(source)
     amended.amended_from = docname
     amended.update(payload or {})
+    keep_the_documents_own_date(amended, "amending")
     amended.insert()
     return amended
 

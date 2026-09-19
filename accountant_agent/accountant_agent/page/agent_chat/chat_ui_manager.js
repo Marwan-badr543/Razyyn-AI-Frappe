@@ -15,6 +15,58 @@ class ChatUIManager {
 		//: check alone let auto-scroll fight a user trying to read upward
 		//: while a reply is still coming in.
 		this.user_pinned_to_bottom = true;
+		//: The newest drawing of each live region, waiting for the next
+		//: animation frame. See _schedule_draw.
+		this.pending_draws = new Map();
+		this.draw_frame = null;
+	}
+
+	// ─── One drawing per frame, not one per event ────────────────────────
+	//
+	// WHY THE CHAT USED TO STOP RESPONDING DURING A LONG ANSWER.
+	//
+	// The agent's answer and its reasoning arrive as hundreds or thousands
+	// of small pieces, and each piece used to redraw the WHOLE of what had
+	// arrived so far: parse all of it as Markdown, sanitise all of it,
+	// replace the element, then measure the page to decide about scrolling.
+	// The cost of one piece therefore grew with the length of the answer,
+	// and the cost of the answer grew with the SQUARE of its length. A long
+	// audit — tens of thousands of words, most of it working notes — spent
+	// minutes of processor time redrawing text that had already been drawn,
+	// and the browser, unable to do anything else in the meantime, offered
+	// to close the page.
+	//
+	// A screen refreshes about sixty times a second, so a drawing that
+	// happens more often than that is thrown away unseen. This keeps only
+	// the NEWEST drawing of each region and performs it once per refresh.
+	// Nothing is lost — the text itself is accumulated as it arrives, by
+	// the caller — and the cost of an answer becomes proportional to how
+	// long it takes rather than to the square of its length.
+	_schedule_draw(key, draw) {
+		this.pending_draws.set(key, draw);
+		if (this.draw_frame !== null) return;
+		this.draw_frame = requestAnimationFrame(() => {
+			this.draw_frame = null;
+			let due = this.pending_draws;
+			this.pending_draws = new Map();
+			due.forEach((run) => {
+				try {
+					run();
+				} catch (e) {
+					console.error("Chat draw failed:", e);
+				}
+			});
+		});
+	}
+
+	// A bubble that has been finalised must not be overwritten a frame
+	// later by the last unfinished drawing of the same bubble. Keyed by
+	// bubble, so finishing one conversation never drops another's.
+	_cancel_draws(bubble_id) {
+		if (!bubble_id) return;
+		[...this.pending_draws.keys()].forEach((key) => {
+			if (key.indexOf(bubble_id + ":") === 0) this.pending_draws.delete(key);
+		});
 	}
 
 	clear_typing_timers() {
@@ -156,6 +208,22 @@ class ChatUIManager {
 
 			let plan_text = data.plan || "";
 			let status = data.status || "pending";
+			// A CARD THE CUSTOMER MUST READ OPENS OPEN. A proposed plan is a
+			// summary they can glance past, so it stays folded. A message
+			// waiting to be sent is the opposite: the recipient, the wording
+			// and the files are the whole reason they are being asked, and a
+			// card they have to click before they can see any of it is an
+			// approval they will give without looking.
+			let starts_open = data.expanded === true;
+			// THE CARD NAMES WHAT IT IS ASKING FOR. "Proposed Execution Plan"
+			// and "Approve & Run" are right for a plan of work and wrong for a
+			// message about to leave — the customer has to know they are
+			// approving a send, not a piece of work. The server supplies both
+			// words, already in their language; the defaults are what a plan
+			// has always said.
+			let card_title = data.title || __("Proposed Execution Plan");
+			let approve_label = data.approve_label || __("Approve & Run");
+			let approve_reply = data.approve_reply || "Approve";
 			let parsed_markdown = this.parse_markdown(plan_text);
 
 			let header_id = `plan-hdr-${this.chat.generate_uuid()}`;
@@ -169,18 +237,18 @@ class ChatUIManager {
 					<div class="plan-actions-wrapper">
 						<button class="plan-btn-approve" id="${btn_id}">
 							<i class="fa fa-play"></i>
-							<span>${__("Approve & Run")}</span>
+							<span>${frappe.utils.escape_html(approve_label)}</span>
 						</button>
 					</div>
 				`;
 			}
 
 			let plan_html = `
-				<div class="plan-card-container collapsed" id="${container_id}">
+				<div class="plan-card-container${starts_open ? "" : " collapsed"}" id="${container_id}">
 					<div class="plan-card-header" id="${header_id}">
 						<div class="plan-title-wrapper">
 							<i class="fa fa-list-alt" style="color: var(--chat-primary);"></i>
-							<span>${__("Proposed Execution Plan")}</span>
+							<span>${frappe.utils.escape_html(card_title)}</span>
 						</div>
 						<i class="fa fa-chevron-down plan-caret-icon"></i>
 					</div>
@@ -219,7 +287,7 @@ class ChatUIManager {
 					btn.find("i").removeClass("fa-play").addClass("fa-spinner fa-spin");
 
 					// Send "Approve" message to resume the agent
-					this.chat.message_handler.send_chat_message("Approve");
+					this.chat.message_handler.send_chat_message(approve_reply);
 				});
 			}
 
@@ -479,6 +547,22 @@ class ChatUIManager {
 						}
 						text_el.html(parsed);
 						if (time_el.length) time_el.fadeIn(300);
+
+						// Attach copy button fixed under finished animated AI message
+						let row_el = bubble_el.closest(".agent-msg-row");
+						if (!row_el.find(".agent-msg-actions").length) {
+							bubble_el.after(`
+								<div class="agent-msg-actions">
+									<button class="chat-action-btn copy-msg-btn" title="${__("Copy message")}">${self.get_copy_icon_svg()}</button>
+								</div>
+							`);
+							row_el.data("raw-content", display_content);
+							row_el.find(".copy-msg-btn").on("click", function (e) {
+								e.stopPropagation();
+								self.copy_message_content(row_el, $(this));
+							});
+						}
+
 						self.scroll_to_bottom(msg_box);
 						self.post_process_rendered_bubble(msg_box);
 						self.render_mermaid_diagrams(msg_box);
@@ -498,38 +582,41 @@ class ChatUIManager {
 			// that is only attachments has nothing for the textarea to hold.
 			let is_own_message = sender === "user" || sender === "human";
 			let can_edit = is_own_message && !attachments_html && content;
-			let edit_actions_html = can_edit
-				? `
+			let actions_html = `
 				<div class="agent-msg-actions">
-					<button class="chat-action-btn edit-msg-btn" title="${__(
-						"Edit"
-					)}"><i class="fa fa-pencil"></i></button>
+					<button class="chat-action-btn copy-msg-btn" title="${__("Copy message")}">${this.get_copy_icon_svg()}</button>
+					${
+						can_edit
+							? `<button class="chat-action-btn edit-msg-btn" title="${__("Edit message")}">${this.get_edit_icon_svg()}</button>`
+							: ""
+					}
 				</div>
-			`
-				: "";
+			`;
 
 			let bubble_html = `
 				<div class="agent-msg-row ${sender}" data-message-id="${message_id || ""}">
 					<div class="agent-msg-bubble">
 						${attachments_html}
 						${parsed_content ? `<div class="agent-msg-text-content">${parsed_content}</div>` : ""}
-						${edit_actions_html}
 					</div>
+					${actions_html}
 					${
 						formatted_time
-							? `<div class="agent-msg-time" style="font-size: 10.5px; color: var(--chat-text-muted); margin-top: 4px; padding: 0 4px;">${formatted_time}</div>`
+							? `<div class="agent-msg-time" style="font-size: 10.5px; color: var(--chat-text-muted); margin-top: 2px; padding: 0 4px;">${formatted_time}</div>`
 							: ""
 					}
 				</div>
 			`;
 
 			msg_box.append(bubble_html);
+			let row = msg_box.find(".agent-msg-row").last();
+			row.data("raw-content", content);
+			let self = this;
+			row.find(".copy-msg-btn").on("click", function (e) {
+				e.stopPropagation();
+				self.copy_message_content(row, $(this));
+			});
 			if (can_edit) {
-				let row = msg_box.find(".agent-msg-row").last();
-				// jQuery's own data cache, not the DOM attribute -- the raw
-				// text (markdown, not the parsed HTML above) survives as-is,
-				// with no escaping to undo when the edit box reopens it.
-				row.data("raw-content", content);
 				row.find(".edit-msg-btn").on("click", () => this.enter_edit_mode(row));
 			}
 			this.scroll_to_bottom(msg_box);
@@ -797,7 +884,7 @@ class ChatUIManager {
 		let wrapper = bubble_el.length ? bubble_el.find(".agent-todo-wrapper") : $();
 		if (!wrapper.length) {
 			// No live bubble to draw into (a resumed turn whose events arrived
-			// first): the checklist still gets shown, on its own row.
+			// first): the checklist is drawn into the transcript instead.
 			this.render_todo_standalone(msg_box, todo);
 			return;
 		}
@@ -832,12 +919,35 @@ class ChatUIManager {
 		}
 	}
 
-	// The reload path: no stream bubble exists, so the checklist of a run that
-	// is still active or paused gets its own row at the end of the transcript.
+	// The reload path: no live stream bubble exists, so the checklist is drawn
+	// into the transcript directly.
+	//
+	// IT GOES WHERE IT ALWAYS GOES: FIRST, INSIDE THE NEWEST THING THE AGENT
+	// SAID. That is where create_stream_bubble puts it while a run is live and
+	// where render_plan_card keeps it when a plan lands, so a rebuilt page
+	// must not put it somewhere else. Appending it as a row of its own at the
+	// very end left the checklist UNDER the plan card it belongs to, so the
+	// customer read the approval before the list of work it was part of.
+	// A row of its own is the fallback for a transcript with nothing from the
+	// agent in it yet.
 	render_todo_standalone(msg_box, todo) {
 		let html = this._todo_panel_html(todo);
 		if (!html) return;
-		msg_box.find(".agent-todo-standalone").remove();
+		this.clear_todo_panels(msg_box);
+
+		let $bubble = msg_box.find(".agent-msg-row.ai").last().find(".agent-msg-bubble").first();
+		if ($bubble.length) {
+			let $wrapper = $bubble.find(".agent-todo-wrapper").first();
+			if (!$wrapper.length) {
+				$bubble.prepend('<div class="agent-todo-wrapper"></div>');
+				$wrapper = $bubble.find(".agent-todo-wrapper").first();
+			}
+			$wrapper.html(html).show();
+			this._bind_todo_events($wrapper);
+			this.force_scroll_to_bottom(msg_box);
+			return;
+		}
+
 		let $row = $(`
 			<div class="agent-msg-row ai agent-todo-standalone">
 				<div class="agent-msg-bubble" style="max-width: 100%;">
@@ -852,16 +962,16 @@ class ChatUIManager {
 
 	update_stream_bubble(msg_box, bubble_id, content) {
 		this.hide_typing_indicator(msg_box);
-		let bubble_el = msg_box.find(`#${bubble_id}`);
-		if (bubble_el.length) {
+		this._schedule_draw(`${bubble_id}:answer`, () => {
+			let bubble_el = msg_box.find(`#${bubble_id}`);
+			if (!bubble_el.length) return;
 			let text_el = bubble_el.find(".agent-msg-text-content");
 			let msg_box_was_near_bottom = this.is_near_bottom(msg_box);
-			let parsed = this.parse_markdown(content);
-			text_el.html(parsed);
+			text_el.html(this.parse_markdown(content));
 			if (msg_box_was_near_bottom) {
 				this.force_scroll_to_bottom(msg_box);
 			}
-		}
+		});
 	}
 
 	// `stream` is the whole active_streams entry (optional — callers that
@@ -869,8 +979,9 @@ class ChatUIManager {
 	// nesting, so nothing on a slow-to-update caller breaks silently).
 	update_stream_status(msg_box, bubble_id, status_text, steps = [], stream = null) {
 		this.hide_typing_indicator(msg_box);
-		let bubble_el = msg_box.find(`#${bubble_id}`);
-		if (bubble_el.length) {
+		this._schedule_draw(`${bubble_id}:steps`, () => {
+			let bubble_el = msg_box.find(`#${bubble_id}`);
+			if (!bubble_el.length) return;
 			let steps_list = bubble_el.find(".thinking-steps-list");
 			let msg_box_was_near_bottom = this.is_near_bottom(msg_box);
 			steps_list.empty();
@@ -941,13 +1052,14 @@ class ChatUIManager {
 			if (msg_box_was_near_bottom) {
 				this.force_scroll_to_bottom(msg_box);
 			}
-		}
+		});
 	}
 
 	update_stream_reasoning(msg_box, bubble_id, reasoning_text) {
 		this.hide_typing_indicator(msg_box);
-		let bubble_el = msg_box.find(`#${bubble_id}`);
-		if (bubble_el.length) {
+		this._schedule_draw(`${bubble_id}:reasoning`, () => {
+			let bubble_el = msg_box.find(`#${bubble_id}`);
+			if (!bubble_el.length) return;
 			let reasoning_block = bubble_el.find(".thinking-reasoning-block");
 			let body_content = bubble_el.find(".thinking-body-content");
 
@@ -964,7 +1076,7 @@ class ChatUIManager {
 			if (msg_box_was_near_bottom) {
 				this.force_scroll_to_bottom(msg_box);
 			}
-		}
+		});
 	}
 
 	update_thinking_duration(msg_box, bubble_id, seconds) {
@@ -979,6 +1091,9 @@ class ChatUIManager {
 	// breakdown is worth leaving open.
 	finalize_stream_bubble(msg_box, bubble_id, content, datetime, header_title, stream = null) {
 		this.hide_typing_indicator(msg_box);
+		// The finished answer is the last word on this bubble: an unfinished
+		// drawing still waiting for the next frame must not land on top of it.
+		this._cancel_draws(bubble_id);
 		let bubble_el = msg_box.find(`#${bubble_id}`);
 		let row_el = msg_box.find(`#row-${bubble_id}`);
 		if (bubble_el.length) {
@@ -1088,6 +1203,21 @@ class ChatUIManager {
 				if (attachments_html) {
 					text_el.before(attachments_html);
 				}
+
+				// Attach copy button fixed under finalized stream message
+				if (!row_el.find(".agent-msg-actions").length) {
+					bubble_el.after(`
+						<div class="agent-msg-actions">
+							<button class="chat-action-btn copy-msg-btn" title="${__("Copy message")}">${this.get_copy_icon_svg()}</button>
+						</div>
+					`);
+				}
+				let self = this;
+				row_el.data("raw-content", content);
+				row_el.find(".copy-msg-btn").off("click").on("click", function (e) {
+					e.stopPropagation();
+					self.copy_message_content(row_el, $(this));
+				});
 			}
 
 			if (datetime) {
@@ -1636,17 +1766,29 @@ class ChatUIManager {
 	post_process_rendered_bubble(container) {
 		let self = this;
 
-		// 1. Wrap tables in responsive div and align columns
+		// Wrap tables in responsive container, attach export toolbar, and align numeric columns
 		container.find("table").each(function () {
 			let table = $(this);
 
-			// Prevent double-wrapping
-			if (!table.parent().hasClass("agent-table-wrapper")) {
-				table.wrap('<div class="agent-table-wrapper"></div>');
+			// Avoid double-processing tables that already have an export toolbar
+			let existing_wrapper = table.closest(".agent-table-wrapper");
+			if (existing_wrapper.length && existing_wrapper.find(".agent-table-toolbar").length) {
+				return;
 			}
+
+			if (!table.parent().hasClass("agent-table-scroll-container")) {
+				if (existing_wrapper.length) {
+					table.wrap('<div class="agent-table-scroll-container"></div>');
+				} else {
+					table.wrap('<div class="agent-table-wrapper"><div class="agent-table-scroll-container"></div></div>');
+				}
+			}
+
+			let wrapper = table.closest(".agent-table-wrapper");
 
 			// Detect numeric columns dynamically
 			let first_row = table.find("tr:first");
+			let row_count = 0;
 			if (first_row.length) {
 				let col_count = first_row.find("th, td").length;
 				let is_numeric_col = new Array(col_count).fill(true);
@@ -1655,6 +1797,7 @@ class ChatUIManager {
 				if (rows.length === 0) {
 					rows = table.find("tr").slice(1); // skip first row
 				}
+				row_count = rows.length;
 
 				rows.each(function () {
 					$(this)
@@ -1696,7 +1839,552 @@ class ChatUIManager {
 					row.addClass("table-total-row");
 				}
 			});
+
+			// Attach Table Export Toolbar if not present
+			if (!wrapper.find(".agent-table-toolbar").length) {
+				let toolbar_html = `
+					<div class="agent-table-toolbar">
+						<div class="agent-table-toolbar-left">
+							<span class="agent-table-tag"><i class="fa fa-table"></i> ${__("Data Table")}</span>
+							<span class="agent-table-row-count">${row_count} ${row_count === 1 ? __("row") : __("rows")}</span>
+						</div>
+						<div class="agent-table-toolbar-right">
+							<button class="agent-table-action-btn btn-table-excel" title="${__("Export to Excel (.xlsx)")}">
+								<i class="fa fa-file-excel-o"></i> <span>Excel</span>
+							</button>
+							<button class="agent-table-action-btn btn-table-pdf" title="${__("Export to PDF (.pdf)")}">
+								<i class="fa fa-file-pdf-o"></i> <span>PDF</span>
+							</button>
+							<button class="agent-table-action-btn btn-table-csv" title="${__("Export to CSV (.csv)")}">
+								<i class="fa fa-file-text-o"></i> <span>CSV</span>
+							</button>
+							<button class="agent-table-action-btn btn-table-copy" title="${__("Copy Table to Clipboard")}">
+								<i class="fa fa-clipboard"></i> <span>${__("Copy")}</span>
+							</button>
+						</div>
+					</div>
+				`;
+				wrapper.prepend(toolbar_html);
+
+				let filename_base = "Razyyn_Table_" + self.get_timestamp_slug();
+
+				wrapper.find(".btn-table-excel").on("click", function (e) {
+					e.preventDefault();
+					self.export_table_to_excel(table, filename_base, $(this));
+				});
+
+				wrapper.find(".btn-table-pdf").on("click", function (e) {
+					e.preventDefault();
+					self.export_table_to_pdf(table, filename_base, $(this));
+				});
+
+				wrapper.find(".btn-table-csv").on("click", function (e) {
+					e.preventDefault();
+					self.export_table_to_csv(table, filename_base);
+				});
+
+				wrapper.find(".btn-table-copy").on("click", function (e) {
+					e.preventDefault();
+					self.copy_table_to_clipboard(table, $(this));
+				});
+			}
 		});
+	}
+
+	get_timestamp_slug() {
+		let now = new Date();
+		let pad = (n) => String(n).padStart(2, "0");
+		let y = now.getFullYear();
+		let m = pad(now.getMonth() + 1);
+		let d = pad(now.getDate());
+		let hr = pad(now.getHours());
+		let mn = pad(now.getMinutes());
+		let sc = pad(now.getSeconds());
+		return `${y}${m}${d}_${hr}${mn}${sc}`;
+	}
+
+	/**
+	 * Extracts headers, rows and cell data from an HTML table element.
+	 */
+	extract_table_data(table_el) {
+		let headers = [];
+		let rows = [];
+		let alignments = [];
+
+		let $table = $(table_el);
+		let $header_cells = $table.find("thead th, thead td");
+		if (!$header_cells.length) {
+			$header_cells = $table.find("tr:first th, tr:first td");
+		}
+
+		$header_cells.each(function () {
+			headers.push($(this).text().trim());
+			alignments.push($(this).css("text-align") || "left");
+		});
+
+		let $body_rows = $table.find("tbody tr");
+		if (!$body_rows.length) {
+			$body_rows = $table.find("tr").slice(1);
+		}
+
+		$body_rows.each(function () {
+			let row_data = [];
+			$(this).find("td, th").each(function () {
+				let val = $(this).text().trim();
+				row_data.push(val);
+			});
+			if (row_data.length) {
+				rows.push(row_data);
+			}
+		});
+
+		return { headers, rows, alignments };
+	}
+
+	/**
+	 * Sanitizes cell contents to prevent CSV / Formula Injection (CWE-1236).
+	 * If a string begins with =, +, -, @, \t, or \r and is not a plain number,
+	 * it is prefixed with a single quote (') so spreadsheet engines treat it as text.
+	 */
+	sanitize_cell_for_export(val, format = "csv") {
+		if (val === null || val === undefined) return "";
+		let str = String(val).trim();
+		if (!str) return "";
+
+		// Check if it's a safe numeric value (e.g., "123", "-45.67", "1,250.00", "+50%")
+		let clean_num_str = str.replace(/[$,€,£,¥,\s]/g, "").replace(/,/g, "");
+		if (/^[+-]?\d+(\.\d+)?%?$/.test(clean_num_str)) {
+			return str;
+		}
+
+		// If string starts with risky formula trigger characters: =, +, -, @, \t, \r
+		if (/^[=+\-@\t\r]/.test(str)) {
+			return "'" + str;
+		}
+		return str;
+	}
+
+	/**
+	 * Sequentially attempts to load a script from multiple sources (local asset first, then CDNs).
+	 */
+	_load_script_with_fallbacks(sources) {
+		return new Promise((resolve, reject) => {
+			let index = 0;
+			let try_next = () => {
+				if (index >= sources.length) {
+					reject(new Error(__("Failed to load script from all available sources")));
+					return;
+				}
+				let src = sources[index++];
+				let script = document.createElement("script");
+				script.src = src;
+				script.crossOrigin = "anonymous";
+				script.onload = () => resolve();
+				script.onerror = () => {
+					script.remove();
+					try_next();
+				};
+				document.head.appendChild(script);
+			};
+			try_next();
+		});
+	}
+
+	/**
+	 * Lazy-loads SheetJS (xlsx.full.min.js) on demand (local bundle first, CDN fallback).
+	 */
+	load_xlsx_library() {
+		if (window.XLSX) {
+			return Promise.resolve(window.XLSX);
+		}
+		if (this._xlsx_loading_promise) {
+			return this._xlsx_loading_promise;
+		}
+		let sources = [
+			"/assets/accountant_agent/js/xlsx.full.min.js",
+			"https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js",
+			"https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js",
+			"https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js",
+		];
+		this._xlsx_loading_promise = this._load_script_with_fallbacks(sources)
+			.then(() => {
+				if (window.XLSX) return window.XLSX;
+				throw new Error(__("Excel library loaded but XLSX object is undefined"));
+			})
+			.catch((err) => {
+				this._xlsx_loading_promise = null; // allow retry on next attempt
+				throw err;
+			});
+		return this._xlsx_loading_promise;
+	}
+
+	/**
+	 * Lazy-loads jsPDF and jsPDF-AutoTable on demand (local bundle first, CDN fallback).
+	 */
+	load_pdf_libraries() {
+		if (
+			window.jspdf &&
+			window.jspdf.jsPDF &&
+			(typeof window.jspdf.jsPDF.prototype.autoTable === "function" ||
+				typeof window.jspdf.autoTable === "function")
+		) {
+			return Promise.resolve(window.jspdf);
+		}
+		if (this._pdf_loading_promise) {
+			return this._pdf_loading_promise;
+		}
+		let jspdf_sources = [
+			"/assets/accountant_agent/js/jspdf.umd.min.js",
+			"https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",
+			"https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js",
+		];
+		let autotable_sources = [
+			"/assets/accountant_agent/js/jspdf.plugin.autotable.min.js",
+			"https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js",
+			"https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js",
+		];
+		this._pdf_loading_promise = this._load_script_with_fallbacks(jspdf_sources)
+			.then(() => this._load_script_with_fallbacks(autotable_sources))
+			.then(() => {
+				if (window.jspdf) return window.jspdf;
+				throw new Error(__("PDF library loaded but jsPDF object is undefined"));
+			})
+			.catch((err) => {
+				this._pdf_loading_promise = null; // allow retry on next attempt
+				throw err;
+			});
+		return this._pdf_loading_promise;
+	}
+
+	/**
+	 * Exports an HTML table to genuine Excel (.xlsx) format.
+	 */
+	async export_table_to_excel(table_el, filename, $btn) {
+		let { headers, rows } = this.extract_table_data(table_el);
+		if (!headers.length && !rows.length) {
+			frappe.show_alert({ message: __("Table contains no data to export"), indicator: "orange" }, 3);
+			return;
+		}
+
+		let original_html = $btn ? $btn.html() : "";
+		if ($btn) {
+			$btn.prop("disabled", true).html('<i class="fa fa-spinner fa-spin"></i> <span>Excel...</span>');
+		}
+
+		try {
+			let XLSX = await this.load_xlsx_library();
+
+			let ws_data = [];
+			if (headers.length) {
+				ws_data.push(headers.map((h) => this.sanitize_cell_for_export(h, "excel")));
+			}
+			rows.forEach((row) => {
+				ws_data.push(
+					row.map((cell) => {
+						let safe_val = this.sanitize_cell_for_export(cell, "excel");
+						let clean_num = cell.replace(/[$,€,£,¥,\s]/g, "").replace(/,/g, "");
+						if (clean_num !== "" && /^-?\d+(\.\d+)?$/.test(clean_num)) {
+							let num = parseFloat(clean_num);
+							if (!isNaN(num)) return num;
+						}
+						return safe_val;
+					})
+				);
+			});
+
+			let ws = XLSX.utils.aoa_to_sheet(ws_data);
+
+			// Auto calculate column widths
+			let col_widths = [];
+			ws_data.forEach((row) => {
+				row.forEach((cell, idx) => {
+					let len = cell !== null && cell !== undefined ? String(cell).length : 10;
+					col_widths[idx] = Math.max(col_widths[idx] || 10, Math.min(len + 3, 50));
+				});
+			});
+			ws["!cols"] = col_widths.map((w) => ({ wch: w }));
+
+			let wb = XLSX.utils.book_new();
+			XLSX.utils.book_append_sheet(wb, ws, "Financial Data");
+			XLSX.writeFile(wb, (filename || "Razyyn_Financial_Table") + ".xlsx");
+			frappe.show_alert({ message: __("Excel file downloaded successfully"), indicator: "green" }, 3);
+		} catch (err) {
+			console.error("Excel export error:", err);
+			frappe.show_alert(
+				{ message: __("Failed to generate Excel file: {0}", [err.message]), indicator: "red" },
+				4
+			);
+		} finally {
+			if ($btn) {
+				$btn.prop("disabled", false).html(original_html);
+			}
+		}
+	}
+
+	/**
+	 * Exports an HTML table to PDF format.
+	 */
+	async export_table_to_pdf(table_el, filename, $btn) {
+		let { headers, rows } = this.extract_table_data(table_el);
+		if (!headers.length && !rows.length) {
+			frappe.show_alert({ message: __("Table contains no data to export"), indicator: "orange" }, 3);
+			return;
+		}
+
+		let original_html = $btn ? $btn.html() : "";
+		if ($btn) {
+			$btn.prop("disabled", true).html('<i class="fa fa-spinner fa-spin"></i> <span>PDF...</span>');
+		}
+
+		try {
+			let jspdf_module = await this.load_pdf_libraries();
+			let { jsPDF } = jspdf_module;
+
+			let is_landscape = headers.length > 5;
+			let doc = new jsPDF({
+				orientation: is_landscape ? "landscape" : "portrait",
+				unit: "pt",
+				format: "a4",
+			});
+
+			let title = filename ? filename.replace(/_/g, " ") : "Razyyn Financial Table";
+			doc.setFontSize(13);
+			doc.setTextColor(91, 69, 224); // Razyyn brand color
+			doc.text(title, 40, 36);
+
+			doc.setFontSize(8.5);
+			doc.setTextColor(100, 116, 139);
+			doc.text(`Generated by Razyyn AI • ${new Date().toLocaleString()}`, 40, 50);
+
+			let autoTableFn = doc.autoTable || (jspdf_module.autoTable && doc.autoTable);
+			if (typeof doc.autoTable !== "function" && typeof jspdf_module.autoTable === "function") {
+				jspdf_module.autoTable(doc, {
+					head: [headers],
+					body: rows,
+					startY: 60,
+					theme: "striped",
+					headStyles: {
+						fillColor: [91, 69, 224],
+						textColor: [255, 255, 255],
+						fontStyle: "bold",
+						fontSize: 8.5,
+					},
+					bodyStyles: {
+						fontSize: 8,
+						textColor: [22, 21, 43],
+					},
+					alternateRowStyles: {
+						fillColor: [247, 247, 251],
+					},
+					margin: { top: 40, left: 40, right: 40, bottom: 40 },
+				});
+			} else {
+				doc.autoTable({
+					head: [headers],
+					body: rows,
+					startY: 60,
+					theme: "striped",
+					headStyles: {
+						fillColor: [91, 69, 224],
+						textColor: [255, 255, 255],
+						fontStyle: "bold",
+						fontSize: 8.5,
+					},
+					bodyStyles: {
+						fontSize: 8,
+						textColor: [22, 21, 43],
+					},
+					alternateRowStyles: {
+						fillColor: [247, 247, 251],
+					},
+					margin: { top: 40, left: 40, right: 40, bottom: 40 },
+					didDrawPage: function (data) {
+						let str = "Page " + doc.internal.getNumberOfPages();
+						doc.setFontSize(8);
+						doc.setTextColor(148, 163, 184);
+						doc.text(str, data.settings.margin.left, doc.internal.pageSize.height - 20);
+					},
+				});
+			}
+
+			doc.save((filename || "Razyyn_Table") + ".pdf");
+			frappe.show_alert({ message: __("PDF file downloaded successfully"), indicator: "green" }, 3);
+		} catch (err) {
+			console.error("PDF export error:", err);
+			frappe.show_alert(
+				{ message: __("Failed to generate PDF: {0}", [err.message]), indicator: "red" },
+				4
+			);
+		} finally {
+			if ($btn) {
+				$btn.prop("disabled", false).html(original_html);
+			}
+		}
+	}
+
+	/**
+	 * Exports an HTML table to RFC-4180 CSV format with UTF-8 BOM.
+	 */
+	export_table_to_csv(table_el, filename) {
+		let { headers, rows } = this.extract_table_data(table_el);
+		if (!headers.length && !rows.length) {
+			frappe.show_alert({ message: __("Table contains no data to export"), indicator: "orange" }, 3);
+			return;
+		}
+
+		let csv_rows = [];
+		if (headers.length) {
+			csv_rows.push(
+				headers
+					.map((h) => {
+						let safe_h = this.sanitize_cell_for_export(h, "csv");
+						return '"' + safe_h.replace(/"/g, '""') + '"';
+					})
+					.join(",")
+			);
+		}
+
+		rows.forEach((row) => {
+			csv_rows.push(
+				row
+					.map((cell) => {
+						let safe_cell = this.sanitize_cell_for_export(cell, "csv");
+						return '"' + safe_cell.replace(/"/g, '""') + '"';
+					})
+					.join(",")
+			);
+		});
+
+		let csv_content = "\uFEFF" + csv_rows.join("\r\n"); // UTF-8 BOM + CRLF
+		let blob = new Blob([csv_content], { type: "text/csv;charset=utf-8;" });
+		this._trigger_download(blob, (filename || "Razyyn_Table") + ".csv");
+		frappe.show_alert({ message: __("CSV file downloaded successfully"), indicator: "green" }, 3);
+	}
+
+	/**
+	 * Copies table data formatted as TSV to the clipboard.
+	 */
+	copy_table_to_clipboard(table_el, $btn) {
+		let { headers, rows } = this.extract_table_data(table_el);
+		if (!headers.length && !rows.length) {
+			frappe.show_alert({ message: __("Table contains no data to copy"), indicator: "orange" }, 3);
+			return;
+		}
+
+		let lines = [];
+		if (headers.length) {
+			lines.push(headers.join("\t"));
+		}
+		rows.forEach((r) => lines.push(r.join("\t")));
+		let tsv_text = lines.join("\n");
+
+		let on_success = () => {
+			if ($btn) {
+				let orig = $btn.html();
+				$btn.addClass("copied").html('<i class="fa fa-check"></i> <span>' + __("Copied!") + "</span>");
+				setTimeout(() => {
+					$btn.removeClass("copied").html(orig);
+				}, 1800);
+			}
+			frappe.show_alert({ message: __("Table copied to clipboard"), indicator: "green" }, 2);
+		};
+
+		if (navigator.clipboard && navigator.clipboard.writeText) {
+			navigator.clipboard.writeText(tsv_text).then(on_success).catch(() => {
+				this._fallback_copy(tsv_text, on_success);
+			});
+		} else {
+			this._fallback_copy(tsv_text, on_success);
+		}
+	}
+
+	/**
+	 * Copies full message content (user message or AI response) to clipboard.
+	 */
+	copy_message_content(row, $btn) {
+		let raw_text = row.data("raw-content");
+		if (!raw_text) {
+			let text_el = row.find(".agent-msg-text-content").clone();
+			text_el.find(".agent-table-toolbar, .agent-msg-actions, .thinking-header-toggle").remove();
+			raw_text = text_el.text().trim();
+		}
+
+		let clean_text = String(raw_text || "")
+			.replace(/\[FILE:[^\]]+\]/g, "")
+			.replace(/\[IMAGE:[^\]]+\]/g, "")
+			.trim();
+
+		if (!clean_text) {
+			clean_text = String(raw_text || "").trim();
+		}
+
+		if (!clean_text) {
+			frappe.show_alert({ message: __("No content to copy"), indicator: "orange" }, 2);
+			return;
+		}
+
+		let on_success = () => {
+			if ($btn && $btn.length) {
+				let orig_html = $btn.html();
+				$btn.addClass("copied").html(this.get_check_icon_svg());
+				$btn.attr("title", __("Copied!"));
+				setTimeout(() => {
+					$btn.removeClass("copied").html(orig_html);
+					$btn.attr("title", __("Copy message"));
+				}, 1800);
+			}
+			frappe.show_alert({ message: __("Message copied to clipboard"), indicator: "green" }, 2);
+		};
+
+		if (navigator.clipboard && navigator.clipboard.writeText) {
+			navigator.clipboard.writeText(clean_text).then(on_success).catch(() => {
+				this._fallback_copy(clean_text, on_success);
+			});
+		} else {
+			this._fallback_copy(clean_text, on_success);
+		}
+	}
+
+	get_copy_icon_svg() {
+		return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path></svg>`;
+	}
+
+	get_check_icon_svg() {
+		return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+	}
+
+	get_edit_icon_svg() {
+		return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>`;
+	}
+
+	_trigger_download(blob, filename) {
+		let url = URL.createObjectURL(blob);
+		let a = document.createElement("a");
+		a.href = url;
+		a.download = filename;
+		document.body.appendChild(a);
+		a.click();
+		setTimeout(() => {
+			document.body.removeChild(a);
+			URL.revokeObjectURL(url);
+		}, 200);
+	}
+
+	_fallback_copy(text, callback) {
+		let textarea = document.createElement("textarea");
+		textarea.value = text;
+		textarea.style.position = "fixed";
+		textarea.style.opacity = "0";
+		document.body.appendChild(textarea);
+		textarea.select();
+		try {
+			document.execCommand("copy");
+			if (callback) callback();
+		} catch (err) {
+			frappe.show_alert({ message: __("Failed to copy table"), indicator: "red" }, 3);
+		} finally {
+			document.body.removeChild(textarea);
+		}
 	}
 
 	get_mermaid_config() {

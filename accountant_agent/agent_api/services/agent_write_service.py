@@ -33,6 +33,7 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 import frappe
@@ -63,8 +64,10 @@ from accountant_agent.agent_api.db.agent_write_repository import (
     read_permitted_documents,
     record_failed_attempt,
     reserve_write_log,
+    read_docstatus,
     run_totals_so_far,
     submit_document,
+    update_document,
 )
 
 # ─── Domain Exceptions (protocol-agnostic) ───────────────────────────────────
@@ -136,7 +139,24 @@ MAX_DOCUMENTS_OFFERED: int = 10
 #: request, so this bounds a model's imagination rather than the customer's ERP.
 MAX_SEARCH_DOCTYPES: int = 6
 
-VALID_ACTIONS: frozenset[str] = frozenset({"create", "submit", "cancel", "amend"})
+#: "update" AND "amend" ARE NOT THE SAME WORD TWICE. An amendment supersedes a
+#: document that has already been POSTED: it is reversed and a corrected
+#: successor takes its place, and both stay in the audit trail. An update edits
+#: a DRAFT — nothing has been recorded from it, so there is nothing to
+#: supersede and the document itself changes. Collapsing them would let a
+#: request to fix a typo reverse a posted entry.
+#:
+#: THIS TUPLE IS THE ONLY LIST OF ACTIONS IN THE APP. The Agent Write Log's
+#: `action` field is a Select, which is a second copy of this list living in a
+#: DocType JSON — and a second copy is a copy that drifts. It did: "update" was
+#: taught to the code and not to the Select, so every update was accepted by
+#: this service, executed, and then refused by the audit row it had to write,
+#: and the customer was told their ERP "does not accept updates". `install.py`
+#: now writes the Select's options from this tuple on every migrate, so the
+#: next action added here reaches the audit log with it.
+ACTIONS: tuple[str, ...] = ("create", "update", "submit", "cancel", "amend")
+
+VALID_ACTIONS: frozenset[str] = frozenset(ACTIONS)
 
 #: A field value of "@0" in a batch means "the name of the document item 0
 #: produced". The agent sends the whole piece of work in one request, so this
@@ -170,6 +190,12 @@ class DocTypePermission:
     allow_cancel: bool
     allow_amend: bool
     auto_submit_ceiling_amount: float
+    #: Whether the agent may CHANGE a draft of this document type. Defaulted
+    #: rather than required so a site whose Agent Write Policy has not been
+    #: migrated yet reads as "not permitted" — a refusal a System Manager can
+    #: act on — instead of raising inside the policy read and taking every
+    #: other action down with it.
+    allow_update: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +247,7 @@ class WritePolicy:
                     "submit": r.allow_submit,
                     "cancel": r.allow_cancel,
                     "amend": r.allow_amend,
+                    "update": r.allow_update,
                     "auto_submit_ceiling_amount": r.auto_submit_ceiling_amount,
                 }
                 for r in self.allowed_document_types
@@ -302,6 +329,9 @@ def load_write_policy() -> WritePolicy:
                 allow_submit=bool(row.allow_submit),
                 allow_cancel=bool(row.allow_cancel),
                 allow_amend=bool(row.allow_amend),
+                # getattr, because a site that has the app but has not run a
+                # migration since this field was added has a row without it.
+                allow_update=bool(getattr(row, "allow_update", 0)),
                 auto_submit_ceiling_amount=float(row.auto_submit_ceiling_amount or 0),
             )
             for row in (doc.allowed_document_types or [])
@@ -393,12 +423,17 @@ def assert_doctype_allowed(policy: WritePolicy, doctype: str, action: str) -> Do
             ).format(doctype)
         )
 
+    # .get, NOT [action]. A KeyError here is an unhandled exception on a
+    # customer's production site for an action this app simply has no opinion
+    # about yet, and the honest answer to "may the agent do X" that nobody has
+    # ever been asked is no.
     allowed = {
         "create": permission.allow_create,
+        "update": permission.allow_update,
         "submit": permission.allow_submit,
         "cancel": permission.allow_cancel,
         "amend": permission.allow_amend,
-    }[action]
+    }.get(action, False)
 
     if not allowed:
         raise DocTypeNotAllowedError(
@@ -465,13 +500,18 @@ def _permission_from_the_erp(doctype: str, action: str) -> DocTypePermission:
         allow_submit=frappe.has_permission(doctype, ptype="submit"),
         allow_cancel=frappe.has_permission(doctype, ptype="cancel"),
         allow_amend=frappe.has_permission(doctype, ptype="amend"),
+        allow_update=frappe.has_permission(doctype, ptype="write"),
         auto_submit_ceiling_amount=0.0,
     )
 
 
-#: How this app's four actions read in Frappe's permission vocabulary.
+#: How this app's five actions read in Frappe's permission vocabulary.
 _ERP_PTYPE: dict[str, str] = {
-    "create": "create", "submit": "submit", "cancel": "cancel", "amend": "amend",
+    # Editing a document is "write" in this system's own permission vocabulary,
+    # which is a different grant from "create" — a role may be allowed to raise
+    # a draft and not to alter one.
+    "create": "create", "update": "write", "submit": "submit",
+    "cancel": "cancel", "amend": "amend",
 }
 
 
@@ -633,6 +673,7 @@ def build_document_spec(doctype: str) -> dict:
             "read_only": bool(df.read_only),
             "options": df.options,
             "default": df.default,
+            "derived": _is_derived(df),
         }
         if df.fieldtype == "Table":
             child_tables.append(
@@ -647,7 +688,13 @@ def build_document_spec(doctype: str) -> dict:
             fields.append(entry)
 
     return {
-        "doctype": doctype,
+        # THIS SYSTEM'S OWN SPELLING, NOT THE CALLER'S. A caller that wrote
+        # "sales invoice" is asking about the DocType called "Sales Invoice",
+        # and echoing what they wrote hands them back a name that is not an
+        # identifier here: the next read addresses a table of that name, finds
+        # nothing, and the customer is told a document sitting in their ledger
+        # does not exist. `meta.name` is what the DocType is actually called.
+        "doctype": meta.name,
         "is_submittable": bool(meta.is_submittable),
         "is_single": bool(meta.issingle),
         "autoname": meta.autoname,
@@ -671,10 +718,45 @@ def _child_field_spec(child_doctype: str | None) -> list[dict]:
             "reqd": bool(df.reqd),
             "options": df.options,
             "default": df.default,
+            "derived": _is_derived(df),
         }
         for df in meta.fields
         if df.fieldtype not in ("Section Break", "Column Break", "Tab Break", "HTML", "Button")
     ]
+
+
+def _is_derived(df) -> bool:
+    """Whether this system fills the field in by itself when the document saves.
+
+    WHY THE AGENT HAS TO BE TOLD, AND WHAT GOES WRONG WHEN IT IS NOT
+        A field list that says nothing about this reads as "here are the fields
+        you had better supply", and the agent goes looking for every one of
+        them in the database. On the Odoo connector — where a sales invoice
+        derives twenty of its own fields and each of its lines another sixteen
+        — that cost seventy-three failed queries against internal tables on a
+        single two-line invoice, and the payload it finally built duplicated
+        work the system was going to do anyway. The same instinct here sends
+        the agent hunting for an item's income account and a customer's
+        receivable account, both of which this system sets during `validate`.
+
+    WHAT CAN HONESTLY BE DETECTED HERE
+        `fetch_from` is this system's own declaration that a field's value is
+        pulled from a linked record — an item's name from the item, a
+        customer's name from the customer. It is exactly "the system fills this
+        in", published in the metadata, and it is what this reports.
+
+        Fields filled in by a controller's `set_missing_values` instead — an
+        invoice's receivable account, a line's income account and cost centre —
+        carry no such marker, so they are not claimed here. Saying only what is
+        certain is the point: a field wrongly marked derived is one the agent
+        stops supplying, and a document short of a value nobody filled in is
+        worse than a redundant look-up.
+
+    Never `read_only`: that is published separately and means something else —
+    the system OWNS the field and discards what you send. A derived field takes
+    a value when one is sent and supplies its own when none is.
+    """
+    return bool(getattr(df, "fetch_from", None)) and not df.read_only
 
 
 def _supports_dry_run(doctype: str) -> bool:
@@ -1058,13 +1140,72 @@ _DOCUMENT_FIELDS: tuple[str, ...] = (
     "party", "party_type", "party_name", "bill_no", "cheque_no",
 )
 
-#: Fields a person's own words might match. Deliberately identity and party
-#: names only: matching free text against a remarks field turns "the invoice
-#: for the office rent" into every document anybody ever wrote a note on.
+#: Fields a person's own words might match on ANY document. Deliberately
+#: identity and party names only: matching free text against a remarks field
+#: turns "the invoice for the office rent" into every document anybody ever
+#: wrote a note on.
+#:
+#: THIS LIST IS THE FLOOR AND NOT THE ANSWER. It names the columns a
+#: TRANSACTION happens to carry, and most records are not transactions: an
+#: item's own name is `item_name`, an account's is `account_name`, a cost
+#: centre's is `cost_center_name`, and a customer's site may have kinds of
+#: record nobody here has ever heard of. Searched by this list alone, every one
+#: of those is findable only by the reference their system generated for it —
+#: so a client who writes "the laptop" about an item their system calls SKU002
+#: is told, with complete confidence, that they have no such record. That is
+#: what `_fields_a_person_might_name` below exists to prevent: the DocType
+#: itself says which of its columns a person would search by, and it is asked.
 _DOCUMENT_SEARCH_FIELDS: tuple[str, ...] = (
     "name", "title", "customer", "customer_name", "supplier", "supplier_name",
     "party", "party_name", "bill_no", "cheque_no",
 )
+
+#: Field types that hold PROSE rather than a name. A description, a remark or a
+#: set of terms may legitimately be listed as searchable, and matching a
+#: person's words against one turns a narrow search into everything anybody
+#: ever wrote a note on. Names are matched; paragraphs are not.
+_PROSE_FIELDTYPES: frozenset[str] = frozenset(
+    {
+        "Text", "Small Text", "Long Text", "Text Editor", "Markdown Editor",
+        "HTML Editor", "HTML", "Code", "JSON", "Comment",
+    }
+)
+
+
+def _fields_a_person_might_name(meta) -> list[str]:
+    """Which of this document type's columns a person's own words could match.
+
+    ASKED OF THE DOCUMENT TYPE, NOT LISTED HERE. Every system already records
+    the answer, because its own users need it: the column it shows as a
+    record's title, and the columns its administrator marked as the ones to
+    search by. Reading those is how a kind of record this app has never heard
+    of is searchable by the name its users actually use — and it is the only
+    version of this that cannot go stale.
+
+    The reference itself always comes first, and prose columns never come at
+    all. What is left is the generic party and identity list, for the
+    transaction documents that carry one.
+    """
+    by_name = {df.fieldname: df for df in meta.fields if df.fieldname}
+
+    wanted: list[str] = ["name"]
+    title = str(getattr(meta, "title_field", "") or "").strip()
+    if title:
+        wanted.append(title)
+    declared = str(getattr(meta, "search_fields", "") or "")
+    wanted.extend(part.strip() for part in declared.split(",") if part.strip())
+    wanted.extend(_DOCUMENT_SEARCH_FIELDS)
+
+    return [
+        fieldname
+        for fieldname in dict.fromkeys(wanted)
+        if fieldname == "name"
+        or (fieldname in by_name
+            # `getattr` because this reads whatever the definition publishes:
+            # a column that does not declare a type is not prose, and refusing
+            # to search it would be a worse answer than searching it.
+            and getattr(by_name[fieldname], "fieldtype", "") not in _PROSE_FIELDTYPES)
+    ]
 
 #: In order. The first one the DocType has is the figure an accountant would
 #: read off the document.
@@ -1074,6 +1215,35 @@ _DOCUMENT_AMOUNT_FIELDS: tuple[str, ...] = (
 
 #: The date the document is filed under, best first.
 _DOCUMENT_DATE_FIELDS: tuple[str, ...] = ("posting_date", "transaction_date", "due_date")
+
+
+def read_document_state(doctype: str, docname: str) -> dict | None:
+    """One document, addressed by its own reference, in the shape every other
+    document route answers in — or None when this system has no such record.
+
+    WHY THIS IS NOT A SEARCH. `search_documents` widens what it is given so
+    that somebody who half-remembered a name still finds their paperwork, and
+    it answers with the ten most recent matches. Both are right for offering a
+    person a choice and wrong for looking a reference up: "SINV-1" widens to
+    everything from SINV-1 to SINV-199, the ten newest come back, and the one
+    actually named — being the oldest — is not among them. A caller matching
+    exactly then finds nothing and reports that the document does not exist.
+
+    Bounded by the customer's own permissions: `get_document_state` reads as
+    the agent user and checks read permission on the document, so one this
+    agent may not see is honestly absent.
+    """
+    if not doctype or not docname:
+        raise MissingParameterError(_("Missing doctype or document name."))
+    if not doctype_exists(doctype):
+        return None
+    try:
+        return get_document_state(doctype, docname)
+    except frappe.PermissionError:
+        # A legitimate customer configuration, not an error: this agent user
+        # has not been given read access. Absent is the honest answer, and it
+        # is the same one a document that is genuinely not there gives.
+        return None
 
 
 def search_documents(
@@ -1175,7 +1345,7 @@ def _search_one_doctype(
     available = {df.fieldname for df in meta.fields} | {"name", "docstatus", "modified",
                                                         "creation", "owner"}
     fields = [f for f in _DOCUMENT_FIELDS if f in available]
-    search_fields = [f for f in _DOCUMENT_SEARCH_FIELDS if f in available] or ["name"]
+    search_fields = _fields_a_person_might_name(meta)
 
     filters: list[list] = []
     if docstatus:
@@ -1841,6 +2011,51 @@ def _payload_amount(payload: dict) -> float:
     return total
 
 
+def _document_label(doc) -> str:
+    """What the customer would call this document.
+
+    ON ERPNEXT THE NAME USUALLY IS THE LABEL — "ACC-JV-2026-00007" is what an
+    accountant searches for. The title is taken when the DocType has one anyway
+    (a customer's name on a Contact, the supplier on a Purchase Invoice), because
+    the receipt the accountant reads should say what they would say.
+
+    THE OTHER ERP IS WHY THIS KEY EXISTS AT ALL. On Odoo a record's reference is
+    its database id and a draft journal entry has no number until it is posted,
+    so a receipt built from the reference alone names something the customer
+    cannot find. One client reads both, so both answer the same question.
+    """
+    try:
+        title = doc.get_title()
+    except Exception:
+        title = ""
+    if title and str(title) != str(doc.name):
+        return f"{doc.name} ({title})"
+    return str(doc.name)
+
+
+def _document_company(doc) -> str:
+    """Which company this document belongs to, or nothing if it has none."""
+    return str(doc.get("company") or "")
+
+
+def _replay_identity(doctype, docname) -> dict:
+    """The name and company of a document a replay points at.
+
+    A REPLAY IS STILL A DOCUMENT THE CUSTOMER HAS TO FIND, so "you already
+    asked me to do this" must name it exactly as the first receipt did. Read
+    from the document rather than carried in the log, because a title can have
+    changed since — and never raises: a log row pointing at a document somebody
+    has since deleted is a receipt worth returning, not a failed request.
+    """
+    try:
+        if doctype and docname and frappe.db.exists(doctype, docname):
+            doc = frappe.get_doc(doctype, docname)
+            return {"label": _document_label(doc), "company": _document_company(doc)}
+    except Exception:
+        pass
+    return {"label": str(docname or ""), "company": ""}
+
+
 def _document_amount(doc: Any) -> float | None:
     """Best-effort headline amount, for the write log and the run caps."""
     for fieldname in ("base_grand_total", "grand_total", "total_debit", "base_paid_amount", "paid_amount"):
@@ -1956,6 +2171,7 @@ def create_document(
             "docname": prior.get("target_docname"),
             "docstatus": prior.get("docstatus_written"),
             "idempotency_key": idempotency_key,
+            **_replay_identity(prior.get("target_doctype"), prior.get("target_docname")),
         }
 
     # AFTER the replay check, deliberately. A REPLAY is a document that already
@@ -2007,6 +2223,10 @@ def create_document(
             "docstatus": int(doc.docstatus or 0),
             "idempotency_key": idempotency_key,
             "amount": _document_amount(doc),
+            # What the customer would call it, and where it is. The receipt
+            # they read is built from this row and from nothing else.
+            "label": _document_label(doc),
+            "company": _document_company(doc),
         }
 
     except _DUPLICATE_KEY_ERRORS as exc:
@@ -2023,6 +2243,7 @@ def create_document(
                 "docname": replayed.get("target_docname"),
                 "docstatus": replayed.get("docstatus_written"),
                 "idempotency_key": idempotency_key,
+                **_replay_identity(replayed.get("target_doctype"), replayed.get("target_docname")),
             }
         raise WriteRejectedError(_user_message("DUPLICATE", str(exc)), code="DUPLICATE")
 
@@ -2096,6 +2317,159 @@ def cancel_existing_document(
     )
 
 
+def update_existing_document(
+    doctype: str,
+    docname: str,
+    payload: dict,
+    idempotency_key: str,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    approved_by: str | None = None,
+    savepoint_ordinal: int = 0,
+) -> dict:
+    """Change a DRAFT document's own values.
+
+    THE DRAFT CHECK IS TAKEN HERE, INSIDE THE TRANSACTION, and it is the whole
+    safety of this action. A posted document is part of the customer's ledger:
+    editing one rewrites a recorded figure with no reversal and no trail, which
+    is the most damaging thing this app could be asked to do. The agent checks
+    before it proposes the change and a person approves it — and then time
+    passes, in which somebody may well have posted it. So the last word is
+    taken at the moment of writing rather than trusted from the request.
+    """
+    return _mutate_existing(
+        action="update",
+        doctype=doctype,
+        docname=docname,
+        idempotency_key=idempotency_key,
+        run_id=run_id,
+        session_id=session_id,
+        approved_by=approved_by,
+        savepoint_ordinal=savepoint_ordinal,
+        operation=lambda: _change_a_draft(doctype, docname, payload),
+        # A SAVE THAT SUCCEEDED IS NOT A CHANGE THAT HAPPENED. See
+        # `_values_the_document_did_not_take`: a field the document type
+        # derives from another is recomputed over whatever the caller set, with
+        # no error of any kind. Only an update is checked — a posting and a
+        # reversal set no values, and an amendment builds a new document whose
+        # own derivations are its to make.
+        verify=lambda doc: _values_the_document_did_not_take(
+            doc, _only_the_caller_s_fields(payload),
+        ),
+    )
+
+
+def _change_a_draft(doctype: str, docname: str, payload: dict):
+    """The draft check and the change, as one step of one transaction."""
+    if read_docstatus(doctype, docname) != 0:
+        raise WriteRejectedError(
+            _("{0} {1} is not a draft, so its contents cannot be changed. A "
+              "posted document is corrected by reversing it and recording a "
+              "corrected one in its place.").format(doctype, docname),
+            code="NOT_A_DRAFT",
+        )
+    return update_document(doctype, docname, _only_the_caller_s_fields(payload))
+
+
+#: Close enough that a stored rate's last digit is not a difference.
+_SAME_TO_WITHIN = Decimal("0.005")
+
+#: A value that starts like a calendar date. Only these may match on a prefix:
+#: a Date column answers as a date and a Datetime column adds a time the caller
+#: never wrote, and neither is a change. No other kind of value matches partly
+#: — "Grant" is not "Grant Plastics Ltd.".
+_LOOKS_LIKE_A_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def _the_same_value(asked: Any, holds: Any) -> bool:
+    """Whether a document now carries what the caller asked it to carry."""
+    if asked is None or asked == "":
+        return holds in (None, "")
+    if isinstance(asked, bool) or isinstance(holds, bool):
+        return bool(asked) == bool(holds)
+
+    try:
+        left, right = Decimal(str(asked).strip()), Decimal(str(holds).strip())
+    except (InvalidOperation, ValueError, TypeError, AttributeError):
+        pass
+    else:
+        return abs(left - right) <= _SAME_TO_WITHIN
+
+    said, stored = str(asked).strip(), str(holds).strip()
+    if _LOOKS_LIKE_A_DATE.match(said) and _LOOKS_LIKE_A_DATE.match(stored):
+        return said[:10] == stored[:10]
+    # CASE IS NOT A DIFFERENCE, and treating it as one reported a change that
+    # had worked perfectly as a change that had not. A link written the way the
+    # client writes it — "marwan" for the customer this system files under
+    # "Marwan" — is resolved to the record and stored under the record's own
+    # name. It is the same record. Two records that differ only in case cannot
+    # exist here, so nothing real is hidden by ignoring it.
+    return said.casefold() == stored.casefold()
+
+
+def _values_the_document_did_not_take(doc, asked_for: dict) -> list[dict]:
+    """Which of the caller's values the saved document does not now carry.
+
+    WHY A SAVE THAT SUCCEEDED PROVES NOTHING. `save()` runs the document type's
+    own `validate()`, and validate's job is to make the document consistent
+    with itself — so a field the document DERIVES from another one is
+    recomputed on the way through, over whatever the caller set. A live request
+    moved the payment due date on nine draft invoices: every save committed,
+    every write log said COMMITTED, and the due date on all nine stayed exactly
+    where it was, because this document type recomputes it from its payment
+    schedule. The client was told nine invoices had been changed. None had.
+
+    Nothing about that is visible from the outside: there is no exception, no
+    refusal and no error message. The only way to know is to look at the
+    document afterwards and compare it with what was asked — which is what this
+    does, on the saved object, inside the same transaction.
+
+    IT REPORTS RATHER THAN REFUSES. The write is real and the rest of it landed;
+    rolling it back would throw away changes that did take, and refusing a write
+    the system merely tidied would be a false alarm on every derived column.
+    What must never happen is silence, so the caller is told exactly which
+    values the document does not carry and what it carries instead — and the
+    agent reports that work as not done.
+
+    SCALARS ONLY. A row table is replaced wholesale and is re-numbered and
+    re-priced by the document type as a matter of course; comparing rows would
+    raise a difference on nearly every correct change.
+    """
+    not_taken: list[dict] = []
+    meta = get_doctype_meta(doc.doctype)
+    for fieldname, asked in (asked_for or {}).items():
+        if isinstance(asked, (list, tuple, dict)):
+            continue
+        if not meta.has_field(fieldname):
+            continue
+        holds = doc.get(fieldname)
+        if _the_same_value(asked, holds):
+            continue
+        not_taken.append({
+            "field": fieldname,
+            "label": meta.get_label(fieldname) or fieldname,
+            "asked": str(asked),
+            "holds": "" if holds in (None, "") else str(holds),
+        })
+    return not_taken
+
+
+def _kept_its_own_value(not_taken: Sequence[dict]) -> str:
+    """The sentence a client reads about values their system would not take."""
+    parts = [
+        _("{0}: you asked for {1} and it holds {2}").format(
+            entry["label"], entry["asked"], entry["holds"] or _("nothing"),
+        )
+        for entry in not_taken
+    ]
+    return _(
+        "The document was saved and did not take {0}. The usual cause is a "
+        "value this document works out for itself — a total from its lines, a "
+        "due date from its payment schedule — which cannot be set directly; "
+        "change what it is worked out from instead."
+    ).format("; ".join(parts))
+
+
 def amend_existing_document(
     doctype: str,
     docname: str,
@@ -2132,8 +2506,14 @@ def _mutate_existing(
     approved_by: str | None,
     savepoint_ordinal: int,
     operation,
+    verify=None,
 ) -> dict:
-    """Shared idempotent protocol for submit / cancel / amend."""
+    """Shared idempotent protocol for update / submit / cancel / amend.
+
+    `verify` is asked, after the write and inside the same transaction, which
+    of the caller's values the saved document does not actually carry. An
+    action that sets no values does not supply one.
+    """
     if not doctype or not docname:
         raise MissingParameterError(_("Missing doctype or document name."))
     if not idempotency_key:
@@ -2155,6 +2535,7 @@ def _mutate_existing(
             "docname": prior.get("target_docname"),
             "docstatus": prior.get("docstatus_written"),
             "idempotency_key": idempotency_key,
+            **_replay_identity(prior.get("target_doctype"), prior.get("target_docname")),
         }
 
     digest = _payload_digest({"doctype": doctype, "docname": docname, "action": action})
@@ -2179,13 +2560,30 @@ def _mutate_existing(
             amount_written=_document_amount(doc),
             response_snapshot={"name": doc.name, "docstatus": int(doc.docstatus or 0)},
         )
-        return {
+        result = {
             "outcome": "CREATED" if action == "amend" else "UPDATED",
             "doctype": doctype,
             "docname": doc.name,
             "docstatus": int(doc.docstatus or 0),
             "idempotency_key": idempotency_key,
+            "label": _document_label(doc),
+            "company": _document_company(doc),
         }
+        not_taken = verify(doc) if verify is not None else []
+        if not_taken:
+            # WRITTEN, AND NOT WHAT WAS ASKED FOR. The transaction stands —
+            # what did apply is real — but the caller must never read this as
+            # the change having happened, so it is answered as work that did
+            # not achieve what it set out to, with the values named.
+            frappe.logger("accountant_agent").info(
+                "%s %s kept its own value for %s",
+                doctype, doc.name, ", ".join(e["field"] for e in not_taken),
+            )
+            result["achieved"] = False
+            result["fields_not_applied"] = not_taken
+            result["error_code"] = "VALUE_NOT_APPLIED"
+            result["error_message"] = _kept_its_own_value(not_taken)
+        return result
 
     except _DUPLICATE_KEY_ERRORS as exc:
         frappe.db.rollback(save_point=savepoint)
@@ -2197,6 +2595,7 @@ def _mutate_existing(
                 "docname": replayed.get("target_docname"),
                 "docstatus": replayed.get("docstatus_written"),
                 "idempotency_key": idempotency_key,
+                **_replay_identity(replayed.get("target_doctype"), replayed.get("target_docname")),
             }
         raise WriteRejectedError(_user_message("DUPLICATE", str(exc)), code="DUPLICATE")
 
@@ -2355,6 +2754,10 @@ def _run_one_write(
 
     doctype = entry.get("doctype") or payload.get("doctype")
     docname = entry.get("docname")
+    if action == "update":
+        return update_existing_document(
+            doctype=doctype, docname=docname, payload=payload, **common
+        )
     if action == "submit":
         return submit_existing_document(doctype=doctype, docname=docname, **common)
     if action == "cancel":
@@ -2482,7 +2885,15 @@ def get_write_log(idempotency_key: str) -> dict:
     record = find_write_log_by_key(idempotency_key)
     if not record:
         return {"found": False, "idempotency_key": idempotency_key}
-    return {"found": True, **record}
+    # THE DOCUMENT HAS TO BE FINDABLE FROM THIS ANSWER. The receipt built here
+    # is the only thing a customer will ever be shown about a document that WAS
+    # written but whose reply never arrived, so it names the document the way
+    # their own screen does and says which company it is in.
+    return {
+        "found": True,
+        **record,
+        **_replay_identity(record.get("target_doctype"), record.get("target_docname")),
+    }
 
 
 def alert_on_stranded_in_flight() -> None:

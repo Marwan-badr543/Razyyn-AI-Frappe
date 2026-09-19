@@ -9,11 +9,18 @@ credentials that live in this site and never leave it.
 
 WHY THE SENDING HAPPENS HERE AND NOT ON THE AGENT SERVER
 	The agent could fetch this configuration over the API and make the call
-	itself. That would put a customer's Google service-account key and Telegram
-	bot token across the network and into another process's memory. Keeping the
-	call here means the agent asks for an outcome ("send this to that address")
-	and never holds the credential — the same trust boundary
-	``agent_write_router`` already draws for writes.
+	itself. That would put a customer's mailbox password and bot tokens across
+	the network and into another process's memory. Keeping the call here means
+	the agent asks for an outcome ("send this to that address") and never holds
+	the credential — the same trust boundary ``agent_write_router`` already
+	draws for writes.
+
+EVERY MESSAGE WAITS FOR THE CUSTOMER
+	Whatever the channel, the agent shows them the recipient, the subject, the
+	words and every file that would be attached, and sends only once they have
+	approved it. That gate lives on the agent side — see
+	``agent/tools/messaging.py`` — and this module records who approved each
+	message alongside who requested it.
 
 WHY A MESSAGE IS TREATED LIKE A LEDGER WRITE
 	An email to a client's auditor cannot be unsent. So it gets what a write
@@ -29,11 +36,12 @@ WHAT IS DELIBERATELY NOT HERE
 	``z_plan/THREE_FEATURES_UNDERSTANDING_AND_QUESTIONS.md``.
 """
 
-import base64
-import json
 import mimetypes
 import os
+import smtplib
+import ssl
 from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
 from typing import Any
 
 import frappe
@@ -44,11 +52,29 @@ from frappe.utils import now_datetime
 SETTINGS_DOCTYPE = "Agent Messaging Settings"
 LOG_DOCTYPE = "Agent Message Log"
 
-#: Gmail scope for send-only. Deliberately not `gmail.compose` or full access:
-#: the delegation the customer's Workspace admin grants should let this app do
-#: exactly one thing, so a compromise of the key cannot read their mail.
-GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.send"
-GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+#: How email leaves this site: a plain SMTP connection to whatever mail server
+#: the customer named, signed in as whatever mailbox they gave.
+#:
+#: WHY NOT THE GMAIL API, WHICH THIS USED TO USE. That path needed a Google
+#: Cloud service account with domain-wide delegation, which only a Workspace
+#: ADMINISTRATOR can authorise — so a practice on a plain @gmail.com address,
+#: or on Outlook, or on their own mail server, simply could not send at all.
+#: SMTP is what every one of them already has: the mailbox they read their own
+#: mail in, an App Password, and nothing to ask an administrator for.
+#:
+#: The channel is still called `gmail` on the wire because that is the key the
+#: agent's one messaging client reads and the one its approval gate names; a
+#: second spelling would just be a channel the agent never offers.
+SMTP_STARTTLS = "STARTTLS"
+SMTP_SSL = "SSL"
+SMTP_NONE = "None"
+
+#: The port each security setting uses when the customer has not named one.
+#: Getting this wrong is the difference between "it works" and a connection
+#: that hangs until it times out, which reads to them as the agent being broken.
+DEFAULT_SMTP_PORTS = {SMTP_STARTTLS: 587, SMTP_SSL: 465, SMTP_NONE: 25}
+
+SMTP_TIMEOUT = 30
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
@@ -107,7 +133,7 @@ class AttachmentError(MessagingError):
 
 
 class ProviderRefusedError(MessagingError):
-	"""Google, Telegram, or Slack rejected the message."""
+	"""The mail server, Telegram, or Slack rejected the message."""
 
 	def __init__(self, detail: str, code: str = "PROVIDER_REFUSED") -> None:
 		super().__init__(detail, code=code)
@@ -121,7 +147,7 @@ def _settings():
 
 
 def get_messaging_config() -> dict:
-	"""Which channels are usable, and where Telegram may send.
+	"""Which channels are usable, and where the bot channels may send.
 
 	Returns no secrets. The agent needs to know what it CAN do so it can tell
 	the accountant honestly — "I can email that, but Telegram is not set up
@@ -133,8 +159,31 @@ def get_messaging_config() -> dict:
 	gmail_ready = bool(
 		settings.gmail_enabled
 		and settings.gmail_sender_email
-		and settings.get_password("gmail_service_account_json", raise_exception=False)
+		and settings.gmail_smtp_host
+		and settings.get_password("gmail_smtp_password", raise_exception=False)
 	)
+
+	# An address book, not a fence: email is usable with none of these saved,
+	# and an address the accountant gives is always sent to. They are reported
+	# so the agent knows the names exist — "email it to Marwan" can only work
+	# if something has told it who Marwan is.
+	# THE ADDRESS TRAVELS FOR EMAIL AND FOR NOTHING ELSE. A Telegram chat id is
+	# withheld so the agent cannot invent one — an unlisted destination is then
+	# refused rather than attempted. On email that omission protects nothing,
+	# because email reaches any address the agent types anyway, and it costs
+	# something real: the customer approving a send would see only a name and
+	# have to take the address on trust. A recipient nobody can check is not a
+	# recipient anybody can meaningfully approve.
+	email_destinations = [
+		{
+			"label": row.label,
+			"address": row.email_address,
+			"is_default": bool(row.is_default),
+			"notes": row.notes or "",
+		}
+		for row in (settings.email_destinations or [])
+		if row.label and row.email_address
+	]
 
 	destinations = [
 		{
@@ -172,6 +221,7 @@ def get_messaging_config() -> dict:
 				"enabled": gmail_ready,
 				"sender": settings.gmail_sender_email if gmail_ready else None,
 				"accepts_any_address": True,
+				"destinations": email_destinations,
 				"unavailable_reason": None if gmail_ready else _gmail_gap(settings),
 			},
 			"telegram": {
@@ -195,11 +245,26 @@ def get_messaging_config() -> dict:
 
 
 def _gmail_gap(settings) -> str:
+	"""Which of the four things is missing, named so it can be fixed.
+
+	Each sentence names the ONE thing to do next. "Email is not configured"
+	would be true of every branch and useful in none of them: the administrator
+	has to know whether to tick a box, type an address, or go and make an App
+	Password.
+	"""
 	if not settings.gmail_enabled:
 		return "Email sending is switched off in Agent Messaging Settings."
 	if not settings.gmail_sender_email:
 		return "No sending mailbox has been set in Agent Messaging Settings."
-	return "The Google service account key has not been saved yet."
+	if not settings.gmail_smtp_host:
+		return (
+			"No mail server has been set in Agent Messaging Settings. For Gmail "
+			"that is smtp.gmail.com."
+		)
+	return (
+		"The mailbox password has not been saved yet. For Gmail this must be a "
+		"16-character App Password, not the account's own password."
+	)
 
 
 def _telegram_gap(settings, destinations) -> str:
@@ -283,63 +348,43 @@ def _load_attachments(file_urls: list[str]) -> list[dict]:
 # ─── Gmail ───────────────────────────────────────────────────────────────────
 
 
-def _gmail_credentials(settings):
-	"""A send-only Gmail credential impersonating the configured mailbox.
+def _smtp_settings(settings) -> tuple[str, int, str, str, str]:
+	"""``(host, port, security, username, password)`` for the configured mailbox.
 
-	Domain-wide delegation is what makes ``with_subject`` legal: the Workspace
-	administrator has authorised this service account's client id for the Gmail
-	send scope across their domain, so it may act as any mailbox in it. Without
-	that authorisation Google returns `unauthorized_client`, which is the error
-	worth recognising because it means the admin step was never done rather
-	than that the key is wrong.
+	The username defaults to the Send As address because that is what it is on
+	Gmail, on Outlook and on nearly every hosted provider — asking an
+	administrator to type the same address twice is a box they will leave empty
+	and a login that will then fail for a reason the form never mentioned.
 	"""
-	from google.oauth2 import service_account
-
-	raw = settings.get_password("gmail_service_account_json", raise_exception=False)
-	if not raw:
+	password = settings.get_password("gmail_smtp_password", raise_exception=False)
+	if not settings.gmail_smtp_host or not password:
 		raise ChannelNotConfiguredError("gmail", _gmail_gap(settings))
 
-	try:
-		info = json.loads(raw)
-	except (TypeError, ValueError) as exc:
-		raise ChannelNotConfiguredError(
-			"gmail",
-			"The Google service account key is not valid JSON. Paste the whole "
-			"file, including the outermost { }.",
-		) from exc
+	security = (settings.gmail_smtp_security or SMTP_STARTTLS).strip()
+	if security not in DEFAULT_SMTP_PORTS:
+		security = SMTP_STARTTLS
 
-	try:
-		credentials = service_account.Credentials.from_service_account_info(
-			info,
-			scopes=[GMAIL_SCOPE],
-		)
-	except Exception as exc:
-		raise ChannelNotConfiguredError(
-			"gmail",
-			f"The Google service account key was not accepted: {exc}",
-		) from exc
-
-	return credentials.with_subject(settings.gmail_sender_email)
+	return (
+		str(settings.gmail_smtp_host).strip(),
+		int(settings.gmail_smtp_port or 0) or DEFAULT_SMTP_PORTS[security],
+		security,
+		str(settings.gmail_smtp_username or settings.gmail_sender_email or "").strip(),
+		password,
+	)
 
 
-def _send_gmail(settings, to: str, subject: str, body: str, attachments: list[dict]) -> str:
-	"""Send one email. Returns Gmail's own message id."""
-	import google.auth.transport.requests as google_requests
+def _build_email(settings, to: str, subject: str, body: str, attachments: list[dict]) -> EmailMessage:
+	"""The message, carrying the id this send will be reported by.
 
-	credentials = _gmail_credentials(settings)
-
-	try:
-		credentials.refresh(google_requests.Request())
-	except Exception as exc:
-		# The single most likely failure, and the one whose message must name
-		# the fix: the admin never authorised the client id for this scope.
-		raise ProviderRefusedError(
-			"Google would not issue a token for this service account. The usual "
-			"cause is that the Workspace administrator has not yet authorised "
-			f"its client id for the gmail.send scope. Google said: {exc}",
-			code="GMAIL_DELEGATION_NOT_AUTHORISED",
-		) from exc
-
+	THE MESSAGE ID IS SET HERE, BEFORE THE SEND, AND THAT IS THE WHOLE POINT.
+	The Gmail API used to hand back an id of its own; SMTP hands back nothing at
+	all — a successful ``sendmail`` returns an empty dict. Letting the receiving
+	server invent the Message-ID would leave this side with no reference to put
+	on the receipt, and the agent is forbidden to claim a send it cannot name.
+	So the id is written into the header, travels with the message, and appears
+	both on the customer's receipt and in the recipient's own copy: given the
+	reference, the message can actually be found.
+	"""
 	message = EmailMessage()
 	message["To"] = to
 	message["Subject"] = subject or "(no subject)"
@@ -348,6 +393,8 @@ def _send_gmail(settings, to: str, subject: str, body: str, attachments: list[di
 		if settings.gmail_sender_name
 		else settings.gmail_sender_email
 	)
+	message["Date"] = formatdate(localtime=True)
+	message["Message-ID"] = make_msgid(domain=_sender_domain(settings))
 	message.set_content(body or "")
 
 	for attachment in attachments:
@@ -358,34 +405,168 @@ def _send_gmail(settings, to: str, subject: str, body: str, attachments: list[di
 			subtype=subtype or "octet-stream",
 			filename=attachment["filename"],
 		)
+	return message
 
-	encoded = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
 
-	response = requests.post(
-		GMAIL_SEND_URL,
-		headers={"Authorization": f"Bearer {credentials.token}"},
-		json={"raw": encoded},
-		timeout=HTTP_TIMEOUT,
-	)
+def _sender_domain(settings) -> str | None:
+	"""The domain of the sending mailbox, or None to let Python choose one.
 
-	if response.status_code >= 400:
+	An id stamped with the sender's own domain is one a spam filter will not
+	hold against the message, and one an administrator can recognise in their
+	mail server's log.
+	"""
+	address = str(settings.gmail_sender_email or "")
+	domain = address.rpartition("@")[2].strip()
+	return domain or None
+
+
+def _send_gmail(settings, to: str, subject: str, body: str, attachments: list[dict]) -> str:
+	"""Send one email over SMTP. Returns the id the message carries.
+
+	A REFUSED RECIPIENT IS A FAILURE, NOT A DETAIL. ``sendmail`` returns the
+	addresses the server would not take and raises nothing when SOME of them
+	were accepted — so a message to one refused address returns quietly, and
+	reporting that as sent is exactly the "nothing raised, so it worked"
+	mistake the receipt rule exists to prevent.
+	"""
+	host, port, security, username, password = _smtp_settings(settings)
+	message = _build_email(settings, to, subject, body, attachments)
+
+	try:
+		if security == SMTP_SSL:
+			server = smtplib.SMTP_SSL(
+				host, port, timeout=SMTP_TIMEOUT, context=ssl.create_default_context(),
+			)
+		else:
+			server = smtplib.SMTP(host, port, timeout=SMTP_TIMEOUT)
+	except Exception as exc:
 		raise ProviderRefusedError(
-			f"Gmail refused the message ({response.status_code}): " f"{_short_provider_error(response)}",
-			code="GMAIL_REJECTED",
+			f"This system could not reach the mail server {host} on port {port}: "
+			f"{exc}",
+			code="SMTP_UNREACHABLE",
+		) from exc
+
+	try:
+		with server:
+			if security == SMTP_STARTTLS:
+				server.ehlo()
+				server.starttls(context=ssl.create_default_context())
+				server.ehlo()
+			if username and password:
+				try:
+					server.login(username, password)
+				except smtplib.SMTPAuthenticationError as exc:
+					# THE ONE FAILURE EVERY GMAIL CUSTOMER HITS. Google refuses
+					# an account password outright, and its own error text says
+					# only "Username and Password not accepted" — which reads as
+					# a typo and sends them to retype the very password that can
+					# never work. The fix is named here instead.
+					raise ProviderRefusedError(
+						f"The mail server would not accept the sign-in for "
+						f"{username}. If this is a Gmail address, it needs a "
+						f"16-character App Password rather than the account's "
+						f"own password: turn on 2-Step Verification, create one "
+						f"at myaccount.google.com/apppasswords, and save it in "
+						f"Agent Messaging Settings. The server said: "
+						f"{_smtp_reason(exc)}",
+						code="SMTP_AUTH_REFUSED",
+					) from exc
+			refused = server.send_message(message)
+	except ProviderRefusedError:
+		raise
+	except smtplib.SMTPRecipientsRefused as exc:
+		raise ProviderRefusedError(
+			f"The mail server would not accept the address {to}: "
+			f"{_smtp_reason(exc)}",
+			code="SMTP_RECIPIENT_REFUSED",
+		) from exc
+	except Exception as exc:
+		raise ProviderRefusedError(
+			f"The mail server would not send the message: {_smtp_reason(exc)}",
+			code="SMTP_REJECTED",
+		) from exc
+
+	if refused:
+		raise ProviderRefusedError(
+			f"The mail server would not accept {', '.join(sorted(refused))}, so "
+			f"the message was not delivered.",
+			code="SMTP_RECIPIENT_REFUSED",
 		)
 
-	message_id = (response.json() or {}).get("id")
-	if not message_id:
-		# Gmail accepted the request but named no message. Without an id there
-		# is no receipt, and without a receipt the agent must not claim a send.
-		raise ProviderRefusedError(
-			"Gmail accepted the request but returned no message id, so the send " "cannot be confirmed.",
-			code="GMAIL_NO_RECEIPT",
-		)
-	return message_id
+	return str(message["Message-ID"])
+
+
+def _smtp_reason(exc: Exception) -> str:
+	"""The mail server's own words, decoded and trimmed.
+
+	smtplib carries the server's reply as raw bytes, so the untouched exception
+	reads as ``b'5.7.8 Username and Password not accepted'`` — quoting that at
+	an accountant is quoting a Python repr at them.
+	"""
+	detail = getattr(exc, "smtp_error", None)
+	if isinstance(detail, (bytes, bytearray)):
+		detail = detail.decode("utf-8", "replace")
+	return str(detail or exc)[:300]
 
 
 # ─── Telegram ────────────────────────────────────────────────────────────────
+
+
+def _resolve_gmail_destination(settings, destination: str | None) -> tuple[str, str]:
+	"""Turn what the accountant said into an address to email, and its name.
+
+	EMAIL IS NOT A PERMITTED SET, AND THAT IS THE WHOLE DIFFERENCE. A Telegram
+	bot can only reach a chat somebody added it to, so an unlisted destination
+	there does not exist. Email reaches anybody, so the saved list is a
+	convenience: it lets "send it to Marwan" work without the accountant
+	finding the address again, and it takes nothing away — an address given in
+	full is sent to exactly as before.
+
+	Returns ``(address, label)``. The label is empty for an address that is not
+	a saved one, which is what the receipt then says.
+	"""
+	rows = [r for r in (settings.email_destinations or []) if r.label and r.email_address]
+	wanted = str(destination or "").strip()
+
+	if "@" in wanted:
+		# An address, given in full. Named in the receipt by its saved name when
+		# it happens to be one of these, because "Sent to Marwan" is what the
+		# accountant asked for and what they will recognise.
+		for row in rows:
+			if str(row.email_address).strip().casefold() == wanted.casefold():
+				return wanted, row.label
+		return wanted, ""
+
+	if not wanted:
+		default = next((r for r in rows if r.is_default), None)
+		if default is None and len(rows) == 1:
+			default = rows[0]
+		if default is not None:
+			return default.email_address, default.label
+		if rows:
+			names = ", ".join(r.label for r in rows)
+			raise UnknownDestinationError(
+				"I was not told who to email. Give me an address, or the name "
+				f"of one of the saved recipients: {names}."
+			)
+		raise UnknownDestinationError("I was not told which address to email.")
+
+	for row in rows:
+		if row.label.strip().casefold() == wanted.casefold():
+			return row.email_address, row.label
+
+	if rows:
+		names = ", ".join(r.label for r in rows)
+		raise UnknownDestinationError(
+			f"'{destination}' is not an email address, and nobody of that name "
+			f"is saved here. The saved recipients are: {names}. Giving me the "
+			f"address itself works too."
+		)
+	raise UnknownDestinationError(
+		f"'{destination}' is not an email address. Give me the address to send "
+		f"to, or save it under a name in Agent Messaging Settings so it can be "
+		f"asked for by name."
+	)
 
 
 def _resolve_telegram_destination(settings, destination: str | None) -> tuple[str, str]:
@@ -607,12 +788,26 @@ def _slack_payload(response) -> dict:
 	if not payload.get("ok"):
 		error = str(payload.get("error") or "no reason given")
 		if error == "not_in_channel":
-			# The one refusal a customer will actually hit, so it names the fix.
+			# The two refusals a customer will actually hit, so they name the fix.
 			raise ProviderRefusedError(
 				"Slack refused the message: the bot has not been invited to that "
 				"channel. Open the channel in Slack and /invite the bot, then "
 				"try again.",
 				code="SLACK_NOT_IN_CHANNEL",
+			)
+		if error in ("missing_scope", "not_allowed_token_type"):
+			# A token made for posting text alone cannot upload a file, and
+			# Slack says so with the same two words whichever permission is
+			# missing. Without naming both, an administrator reads
+			# "missing_scope" and has nowhere to go.
+			needed = str(payload.get("needed") or "") or "chat:write and files:write"
+			raise ProviderRefusedError(
+				f"Slack refused the message: the bot token does not carry the "
+				f"permission this needs ({needed}). Add chat:write and "
+				f"files:write to the app's Bot Token Scopes, REINSTALL the app "
+				f"to the workspace — a scope added without reinstalling does "
+				f"not take effect — and save the new token.",
+				code="SLACK_MISSING_SCOPE",
 			)
 		raise ProviderRefusedError(
 			f"Slack refused the message: {error}",
@@ -695,9 +890,7 @@ def send_message(
 		if channel == "gmail":
 			if not settings.gmail_enabled:
 				raise ChannelNotConfiguredError("gmail", _gmail_gap(settings))
-			if not destination or "@" not in str(destination):
-				raise UnknownDestinationError(f"'{destination}' is not an email address.")
-			resolved_destination = str(destination).strip()
+			resolved_destination, label = _resolve_gmail_destination(settings, destination)
 			provider_message_id = _send_gmail(
 				settings,
 				resolved_destination,

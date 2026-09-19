@@ -13,6 +13,7 @@ class ChatMessageHandler {
 		this.cancelled_sessions = new Set();
 		this.drafts = {};
 		this.clarifications = {};
+		this.recovery_pollers = {};
 	}
 
 	save_draft(session_id) {
@@ -121,6 +122,8 @@ class ChatMessageHandler {
 		// The switch as it stands NOW decides what travels — not whether a
 		// reading happens to have been done earlier.
 		let scan = !!(this.chat.file_upload_handler && this.chat.file_upload_handler.scan_enabled);
+		// Same rule as scan: the switch as it stands NOW decides.
+		let high_thinking = !!(this.chat.file_upload_handler && this.chat.file_upload_handler.high_thinking_enabled);
 
 		if (has_attachments) {
 			file_urls = this.chat.file_upload_handler.get_file_urls();
@@ -137,10 +140,10 @@ class ChatMessageHandler {
 		}
 
 		let full_message = attachment_markers + (message || "");
-		await this.send_chat_message(full_message.trim(), file_urls, scan);
+		await this.send_chat_message(full_message.trim(), file_urls, scan, high_thinking);
 	}
 
-	async send_chat_message(message, file_urls = null, scan = false) {
+	async send_chat_message(message, file_urls = null, scan = false, high_thinking = false) {
 		let session_id = this.chat.session_manager.session_id;
 		if (!session_id) return;
 
@@ -221,6 +224,7 @@ class ChatMessageHandler {
 				agent_type: agent_type,
 				file_urls: file_urls ? JSON.stringify(file_urls) : null,
 				scan: scan ? 1 : 0,
+				high_thinking: high_thinking ? 1 : 0,
 			}
 		);
 
@@ -278,6 +282,16 @@ class ChatMessageHandler {
 			if (this.cancelled_sessions.has(active_session_id)) {
 				this.cancelled_sessions.delete(active_session_id);
 				return res;
+			}
+
+			if (res && res.status === "queued") {
+				// Keep recovery alive even when the customer switched chats while
+				// the enqueue RPC was returning. The terminal row still belongs to
+				// this session and its sidebar must settle without a page refresh.
+				this.start_result_recovery(
+					active_session_id,
+					res.previous_ai_message_name || null
+				);
 			}
 
 			if (this.chat.session_manager.session_id === active_session_id) {
@@ -354,6 +368,76 @@ class ChatMessageHandler {
 			this.processing_sessions.delete(active_session_id);
 			delete this.clarifications[active_session_id];
 		}
+	}
+
+	start_result_recovery(session_id, previous_ai_message_name = null) {
+		this.stop_result_recovery(session_id);
+		let stopped = false;
+		let failures = 0;
+		let started_at = Date.now();
+		let poller = { timer: null, stop: () => { stopped = true; } };
+		this.recovery_pollers[session_id] = poller;
+
+		let poll = async () => {
+			if (stopped || this.recovery_pollers[session_id] !== poller) return;
+			// Match the server-side three-hour job ceiling, with a small grace
+			// period. A dead browser poll must never live forever.
+			if (Date.now() - started_at > 3 * 60 * 60 * 1000 + 60000) {
+				this.stop_result_recovery(session_id);
+				return;
+			}
+
+			try {
+				let params = { session_id: session_id };
+				if (previous_ai_message_name) {
+					params.previous_ai_message_name = previous_ai_message_name;
+				}
+				let result = await frappe.xcall(
+					"accountant_agent.accountant_agent.page.agent_chat.agent_chat.get_turn_result",
+					params
+				);
+				failures = 0;
+				// The answer may have arrived over the socket while this call was
+				// in flight — the worker commits the transcript BEFORE it announces
+				// it, so both paths routinely land together. Whoever was stopped
+				// stays stopped; two rebuilds of one transcript draw it twice.
+				if (stopped || this.recovery_pollers[session_id] !== poller) return;
+				if (result && result.status !== "pending") {
+					this.stop_result_recovery(session_id);
+					this.chat.stop_stream_timer(session_id);
+					if (this.chat.active_streams) delete this.chat.active_streams[session_id];
+					this.processing_sessions.delete(session_id);
+
+					if (this.chat.session_manager.session_id === session_id) {
+						this.set_button_state("send");
+						// Rebuild from the committed source of truth. This also restores
+						// clarification controls embedded in a persisted question.
+						await this.chat.session_manager.load_chat_history();
+					} else {
+						await this.chat.session_manager.load_chats(false);
+					}
+					return;
+				}
+			} catch (e) {
+				failures += 1;
+				if (failures === 1) console.warn("Chat recovery poll failed; retrying", e);
+			}
+
+			if (!stopped) {
+				let delay = document.hidden ? 10000 : Math.min(5000, 1500 + failures * 500);
+				poller.timer = setTimeout(poll, delay);
+			}
+		};
+
+		poller.timer = setTimeout(poll, 1500);
+	}
+
+	stop_result_recovery(session_id) {
+		let poller = this.recovery_pollers[session_id];
+		if (!poller) return;
+		poller.stop();
+		if (poller.timer) clearTimeout(poller.timer);
+		delete this.recovery_pollers[session_id];
 	}
 
 	// ─── Edit a previously sent message ─────────────────────────────────────
@@ -488,6 +572,7 @@ class ChatMessageHandler {
 		if (!agent_email) return;
 
 		this.cancelled_sessions.add(session_id);
+		this.stop_result_recovery(session_id);
 		this.chat.stop_stream_timer(session_id);
 
 		if (this.chat.active_streams && this.chat.active_streams[session_id]) {

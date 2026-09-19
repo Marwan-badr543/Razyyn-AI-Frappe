@@ -8,6 +8,7 @@
  "field_order": [
   "document_type",
   "allow_create",
+  "allow_update",
   "allow_submit",
   "column_break_awad1",
   "allow_cancel",
@@ -32,6 +33,15 @@
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Allow Create"
+  },
+  {
+   "columns": 1,
+   "default": "0",
+   "description": "Allow the agent to change a DRAFT of this document type. Posted documents are never edited; they are reversed and re-recorded.",
+   "fieldname": "allow_update",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Allow Update"
   },
   {
    "columns": 1,
@@ -75,7 +85,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-08-18 00:00:00.000000",
+ "modified": "2026-09-15 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Accountant Agent",
  "name": "Agent Write Allowed Doctype",

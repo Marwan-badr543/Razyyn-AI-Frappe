@@ -95,6 +95,18 @@ def doctype_exists(doctype_name: str) -> bool:
     return bool(frappe.db.exists("DocType", doctype_name))
 
 
+def get_table_columns(doctype_name: str) -> list[str]:
+    """The columns this DocType's table REALLY has.
+
+    Not the same question as "what fields does it declare". A Button is a field
+    with no column; a field marked `is_virtual` is computed in Python and never
+    written. Anything built from `meta.fields` alone therefore names columns no
+    SELECT can return — see `build_doctype_schema_summary` for why that is the
+    most damaging way a schema endpoint can be wrong.
+    """
+    return frappe.db.get_table_columns(doctype_name)
+
+
 def get_doctype_metadata(doctype_name: str) -> Any:
     """
     Retrieve the Frappe Meta object for a given DocType.
