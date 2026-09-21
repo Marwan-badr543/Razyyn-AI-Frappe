@@ -113,6 +113,26 @@ def _public_site_url() -> str:
     return (override or frappe.utils.get_url()).rstrip("/")
 
 
+def _connection_registration_payload(
+    *, site_url: str, credentials: dict[str, str], label: str
+) -> dict[str, str]:
+    """Build the platform connection contract for this Frappe app.
+
+    The platform deliberately requires ``erp_code`` so a missing vendor can
+    never be guessed and queried with the wrong SQL dialect. Keep that field in
+    one shared payload builder: both first-time connection and credential
+    rotation must identify themselves as ERPNext/Frappe.
+    """
+    return {
+        "site_url": site_url,
+        "api_key": credentials["api_key"],
+        "api_secret": credentials["api_secret"],
+        "agent_erp_user": AGENT_USER,
+        "label": label,
+        "erp_code": "ERPNEXT",
+    }
+
+
 def _ensure_agent_credentials(force_new: bool = False) -> dict[str, str]:
     """The agent user's API key and secret, minting them only if needed.
 
@@ -413,13 +433,11 @@ def connect_write_access(
 
     result = _platform_request(
         doc, "POST", "/api/create/connections",
-        data={
-            "site_url": site_url,
-            "api_key": credentials["api_key"],
-            "api_secret": credentials["api_secret"],
-            "agent_erp_user": AGENT_USER,
-            "label": frappe.local.site,
-        },
+        data=_connection_registration_payload(
+            site_url=site_url,
+            credentials=credentials,
+            label=frappe.local.site,
+        ),
     )
 
     connection_id = result.get("erp_connection_id")
@@ -595,13 +613,11 @@ def rotate_and_reconnect(agent_email: str) -> dict:
 
     result = _platform_request(
         doc, "POST", "/api/create/connections",
-        data={
-            "site_url": site_url,
-            "api_key": credentials["api_key"],
-            "api_secret": credentials["api_secret"],
-            "agent_erp_user": AGENT_USER,
-            "label": frappe.local.site,
-        },
+        data=_connection_registration_payload(
+            site_url=site_url,
+            credentials=credentials,
+            label=frappe.local.site,
+        ),
     )
 
     verified = bool(result.get("verified"))
