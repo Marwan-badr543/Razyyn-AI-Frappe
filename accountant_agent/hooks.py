@@ -1,8 +1,8 @@
 app_name = "accountant_agent"
-app_title = "Accountant Agent"
-app_publisher = "Marwan Badr"
-app_description = "acc agent"
-app_email = "marwanbadr@gmail.com"
+app_title = "Razyyn AI"
+app_publisher = "Razyyn AI"
+app_description = "AI finance department inside ERPNext and Frappe: ask, analyse, audit, reconcile and governed record creation."
+app_email = "razyynai@gmail.com"
 app_license = "mit"
 
 # Apps
@@ -161,9 +161,7 @@ after_migrate = "accountant_agent.install.after_migrate"
 # ---------------
 
 scheduler_events = {
-	"hourly": [
-		"accountant_agent.agent_api.services.agent_api_service.cleanup_old_files"
-	],
+	"hourly": ["accountant_agent.agent_api.services.agent_api_service.cleanup_old_files"],
 	"daily": [
 		# Alerts on Agent Write Log rows stuck IN_FLIGHT. These should be
 		# impossible - the reservation and its commit share one transaction - so
@@ -253,4 +251,3 @@ scheduler_events = {
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-
