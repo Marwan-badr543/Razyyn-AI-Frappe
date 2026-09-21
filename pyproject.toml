@@ -19,7 +19,11 @@ dependencies = [
     # system packages the Python wheels do not carry: tesseract-ocr with the
     # eng and ara language data, and poppler-utils.
     "pytesseract",
-    "pdf2image"
+    "pdf2image",
+    # Parses every statement the agent sends so each table it reads can be
+    # replaced by its live rows (agent_api/services/live_rows.py). Without it
+    # the read runs as written and the reply says the exclusion did not happen.
+    "sqlglot",
 ]
 
 [build-system]

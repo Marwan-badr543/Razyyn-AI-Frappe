@@ -30,6 +30,10 @@ from accountant_agent.agent_api.services.agent_api_service import (
 	save_generated_file,
 	validate_and_execute_query,
 )
+from accountant_agent.agent_api.services.live_rows import read_flag
+from accountant_agent.agent_api.services.query_guard import (
+	assert_query_is_not_a_cartesian_product,
+)
 
 # ─── Input Extraction Helpers ───────────────────────────────────────────────
 
@@ -69,17 +73,27 @@ def _set_error_response(status_code: int, error_message: str) -> dict:
 
 
 @frappe.whitelist(allow_guest=True)
-def execute_query(sql_query: str | None = None, api_key: str | None = None) -> dict:
+def execute_query(
+	sql_query: str | None = None, api_key: str | None = None, include_cancelled: str | bool | None = None
+) -> dict:
 	"""
 	Execute a read-only SQL SELECT query on behalf of the agent,
 	authenticated by the user's API Key (UUID).
+
+	Draft and cancelled rows are removed from every table the statement reads
+	unless `include_cancelled` is set — see `services/live_rows.py`.
 	"""
 	resolved_api_key = _extract_api_key(api_key)
 	resolved_query = _extract_param(sql_query, "sql_query")
+	resolved_include = read_flag(_extract_param(include_cancelled, "include_cancelled"))
 
 	try:
 		settings_user = authenticate_by_api_key(resolved_api_key)
-		return validate_and_execute_query(resolved_query, settings_user)
+		# The availability half of the guard, beside the read-only half the
+		# service applies: a query that multiplies tables is refused before
+		# the database sees it, with the same 400 every other refusal gets.
+		assert_query_is_not_a_cartesian_product(resolved_query or "")
+		return validate_and_execute_query(resolved_query, settings_user, include_cancelled=resolved_include)
 
 	except AuthenticationRequiredError:
 		return _set_error_response(401, "Missing API Key. Authentication required.")
