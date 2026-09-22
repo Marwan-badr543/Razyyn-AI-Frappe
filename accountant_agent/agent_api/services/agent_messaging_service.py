@@ -36,6 +36,7 @@ WHAT IS DELIBERATELY NOT HERE
 	``z_plan/THREE_FEATURES_UNDERSTANDING_AND_QUESTIONS.md``.
 """
 
+import json
 import mimetypes
 import os
 import smtplib
@@ -142,8 +143,91 @@ class ProviderRefusedError(MessagingError):
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 
+#: The DocType's fields as THIS APP ships them, read from the app's own
+#: definition once per process. A site can carry the app's code and an older
+#: database: the DocType is there with fewer fields until someone runs
+#: `bench migrate`. Reading one of the absent fields by attribute raises
+#: AttributeError, and that is how a site which could still send on two
+#: channels came to answer HTTP 500 for all three. The shipped definition is
+#: what this module was written against, so it is what says which fields a
+#: stale site is short of.
+_SHIPPED_FIELDS: list[tuple[str, str]] | None = None
+
+#: Missing-field sets already reported, so a stale site names its gap once per
+#: process instead of once per turn.
+_STALE_SCHEMA_REPORTED: set[frozenset] = set()
+
+STALE_SCHEMA_REASON = (
+	"This site's database is older than the app: the messaging settings it "
+	"holds have no place to store this yet. Run 'bench --site <site> migrate' "
+	"to apply the schema."
+)
+
+
+def _shipped_fields() -> list[tuple[str, str]]:
+	"""Every field name and type in the app's own copy of the DocType."""
+	global _SHIPPED_FIELDS
+	if _SHIPPED_FIELDS is None:
+		name = frappe.scrub(SETTINGS_DOCTYPE)
+		path = frappe.get_app_path(
+			"accountant_agent", "accountant_agent", "doctype", name, f"{name}.json",
+		)
+		with open(path, encoding="utf-8") as handle:
+			definition = json.load(handle)
+		_SHIPPED_FIELDS = [
+			(field["fieldname"], field.get("fieldtype", ""))
+			for field in definition.get("fields", [])
+			if field.get("fieldname")
+		]
+	return _SHIPPED_FIELDS
+
+
 def _settings():
-	return frappe.get_single(SETTINGS_DOCTYPE)
+	"""The messaging settings, readable even on a site that has not migrated.
+
+	Absence of a field is absence of its value and nothing more, so every
+	field this site has not migrated is filled with what stands for "not set"
+	for its type - no rows for a table, nothing for anything else. A channel
+	the site can still use keeps working; the one it cannot is reported as
+	unconfigured, with the reason naming the migration, instead of taking the
+	whole route down with it.
+	"""
+	settings = frappe.get_single(SETTINGS_DOCTYPE)
+	meta = frappe.get_meta(SETTINGS_DOCTYPE)
+	missing = [
+		(fieldname, fieldtype)
+		for fieldname, fieldtype in _shipped_fields()
+		if not meta.get_field(fieldname)
+	]
+	for fieldname, fieldtype in missing:
+		setattr(settings, fieldname, [] if fieldtype == "Table" else None)
+	settings.razyyn_unmigrated_fields = frozenset(name for name, _ in missing)
+	if missing:
+		_report_stale_schema(settings.razyyn_unmigrated_fields)
+	return settings
+
+
+def _report_stale_schema(fieldnames: frozenset) -> None:
+	"""Name the gap in the site's own Error Log, once per process."""
+	if fieldnames in _STALE_SCHEMA_REPORTED:
+		return
+	_STALE_SCHEMA_REPORTED.add(fieldnames)
+	frappe.log_error(
+		title="Accountant Agent: site is not migrated",
+		message=(
+			f"The {SETTINGS_DOCTYPE} DocType on this site has no "
+			f"{', '.join(sorted(fieldnames))} field, so anything kept there "
+			"cannot be read or saved and the channels that depend on it are "
+			"reported as unconfigured. Run 'bench --site <site> migrate' to "
+			"apply the schema."
+		),
+	)
+
+
+def _stale_schema_gap(settings, *fieldnames: str) -> str | None:
+	"""The migration sentence when a channel's own field is not on this site."""
+	unmigrated = getattr(settings, "razyyn_unmigrated_fields", frozenset())
+	return STALE_SCHEMA_REASON if unmigrated.intersection(fieldnames) else None
 
 
 def get_messaging_config() -> dict:
@@ -252,6 +336,9 @@ def _gmail_gap(settings) -> str:
 	has to know whether to tick a box, type an address, or go and make an App
 	Password.
 	"""
+	stale = _stale_schema_gap(settings, "gmail_enabled", "gmail_sender_email", "gmail_smtp_host")
+	if stale:
+		return stale
 	if not settings.gmail_enabled:
 		return "Email sending is switched off in Agent Messaging Settings."
 	if not settings.gmail_sender_email:
@@ -268,6 +355,9 @@ def _gmail_gap(settings) -> str:
 
 
 def _telegram_gap(settings, destinations) -> str:
+	stale = _stale_schema_gap(settings, "telegram_enabled", "telegram_destinations")
+	if stale:
+		return stale
 	if not settings.telegram_enabled:
 		return "Telegram sending is switched off in Agent Messaging Settings."
 	if not settings.get_password("telegram_bot_token", raise_exception=False):
@@ -281,6 +371,9 @@ def _telegram_gap(settings, destinations) -> str:
 
 
 def _slack_gap(settings, destinations) -> str:
+	stale = _stale_schema_gap(settings, "slack_enabled", "slack_destinations")
+	if stale:
+		return stale
 	if not settings.slack_enabled:
 		return "Slack sending is switched off in Agent Messaging Settings."
 	if not settings.get_password("slack_bot_token", raise_exception=False):

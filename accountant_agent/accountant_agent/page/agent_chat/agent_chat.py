@@ -174,14 +174,37 @@ def assert_owns_session(session_id: str) -> None:
 # ---------------- Server Communication Helpers ----------------
 
 
-def register_agent_on_server(email: str, password: str, company_name: str, api_key: str) -> None:
-	"""Sends a user registration POST request to the remote agent server."""
+def register_agent_on_server(
+	email: str,
+	password: str,
+	company_name: str,
+	api_key: str,
+	country_code: str,
+	accepted_terms: bool,
+) -> None:
+	"""Sends a user registration POST request to the remote agent server.
+
+	`country_code` is the jurisdiction the account is created under, and it is
+	asked for on the sign-up form rather than defaulted. It decides which
+	country's accounting law the agent retrieves, so an account that never
+	chose one was silently answering under Egyptian law — correct for most of
+	this platform's customers and quietly wrong for the rest, with nothing
+	anywhere reporting an error. The platform refuses a code outside its list.
+
+	`accepted_terms` is the customer ticking the terms-of-use box on the form.
+	It travels to the platform because the platform is what records it: a tick
+	box nobody writes down cannot answer the only question it exists to answer
+	— whether this account agreed to the terms — and the ERP the account was
+	made from may be gone by the time anyone asks.
+	"""
 	payload = {
 		"api_key": api_key,
 		"name": company_name,
 		"username": email,
 		"password": password,
 		"company_url": frappe.utils.get_url(),
+		"country_code": country_code,
+		"accepted_terms": accepted_terms,
 	}
 	try:
 		response = requests.post(
@@ -998,7 +1021,88 @@ def get_connection_status(agent_email: str | None = None) -> dict:
 
 
 @frappe.whitelist()
-def authenticate_agent(mode: str, email: str, password: str, company_name: str | None = None) -> dict:
+def get_signup_countries() -> dict:
+	"""The countries an account may be registered under, for the sign-up form.
+
+	WHY THIS APP DOES NOT KEEP ITS OWN LIST
+		The platform refuses a country outside `api/core/countries.py`, so a
+		list maintained here would eventually offer a customer a country their
+		registration is then refused for — and the refusal would arrive after
+		they had typed a password. One list, fetched.
+
+		This runs BEFORE the account exists, so it carries no token; the
+		platform serves it publicly for exactly that reason.
+
+	`suggested` is this ERP's own company country, when it maps to a code the
+	platform knows. It preselects the right answer for almost everyone without
+	deciding for anybody — the customer still confirms it.
+	"""
+	user = frappe.session.user
+	if user == "Guest":
+		frappe.throw(_("Please log in to ERPNext first."))
+
+	# REPORTED, NOT THROWN.
+	#
+	# `frappe.throw` here would put a modal dialog in front of somebody who has
+	# not asked for anything yet — the card loads this while they look at it.
+	# The sign-up form shows the reason next to the country box instead and
+	# refuses to submit, which is the same refusal without the interruption.
+	try:
+		response = requests.get(
+			f"{get_agent_server_url()}/users/countries",
+			timeout=AGENT_COUNTRIES_TIMEOUT,
+		)
+		response.raise_for_status()
+		payload = response.json()
+	except (requests.exceptions.RequestException, ValueError) as e:
+		frappe.log_error(title="Accountant Agent Auth", message=f"Country list request error: {e!s}")
+		return {
+			"countries": [],
+			"error": _("Could not reach the Agent Server to load the country list."),
+		}
+
+	countries = payload.get("countries") or []
+	known = {str(row.get("code") or "").upper() for row in countries}
+	return {
+		"countries": countries,
+		"default": payload.get("default"),
+		"suggested": _this_erp_country_code(known),
+	}
+
+
+def _this_erp_country_code(known: set) -> str | None:
+	"""This site's own company country as an ISO code, if it is one we can use.
+
+	Best effort by design: a Frappe site without ERPNext has no Company, and a
+	Country record can carry a blank code. Neither is a reason to fail the
+	sign-up form — the customer simply picks from the list themselves.
+	"""
+	try:
+		company = frappe.defaults.get_user_default("Company")
+		if not company:
+			names = frappe.get_all("Company", pluck="name", limit=1)
+			company = names[0] if names else None
+		if not company:
+			return None
+		country_name = frappe.db.get_value("Company", company, "country")
+		if not country_name:
+			return None
+		code = frappe.db.get_value("Country", country_name, "code")
+		code = str(code or "").strip().upper()
+		return code if code in known else None
+	except Exception:
+		return None
+
+
+@frappe.whitelist()
+def authenticate_agent(
+	mode: str,
+	email: str,
+	password: str,
+	company_name: str | None = None,
+	country_code: str | None = None,
+	accepted_terms: bool | str = False,
+) -> dict:
 	"""Handles login or signup requests against the agent server and updates local settings."""
 	user = frappe.session.user
 	if user == "Guest":
@@ -1013,6 +1117,31 @@ def authenticate_agent(mode: str, email: str, password: str, company_name: str |
 		if not company_name:
 			frappe.throw(_("Company Name is required for registration."))
 
+		# REFUSED HERE RATHER THAN DEFAULTED.
+		#
+		# The platform has a default (Egypt) and would accept the registration
+		# without this field. That default is what this screen exists to stop
+		# relying on: a customer in Saudi Arabia whose form omitted the country
+		# was given Egyptian law to be audited against, and neither side
+		# reported anything wrong. An empty box is a question that was not
+		# answered, not an answer.
+		country = str(country_code or "").strip().upper()
+		if len(country) != 2 or not country.isalpha():
+			frappe.throw(_("Please choose the country your books are kept under."))
+
+		# AGREED TO, NOT ASSUMED.
+		#
+		# The sign-up form refuses to submit with the box unticked, which is
+		# where a customer sees this. It is checked again here because the
+		# browser is not the gate: this method is whitelisted, and a call that
+		# never drew a form would otherwise create an account that agreed to
+		# nothing. The platform refuses it a third time, at the row.
+		accepted = _asked_for(accepted_terms)
+		if not accepted:
+			frappe.throw(
+				_("Please accept the Terms of Use to create an account.")
+			)
+
 		# Generate new API key UUID
 		api_key_uuid = str(uuid.uuid4())
 
@@ -1024,7 +1153,9 @@ def authenticate_agent(mode: str, email: str, password: str, company_name: str |
 
 		# Create the user on server
 		try:
-			register_agent_on_server(email, password, company_name, api_key_uuid)
+			register_agent_on_server(
+				email, password, company_name, api_key_uuid, country, accepted
+			)
 		except Exception as e:
 			frappe.db.rollback()
 			doc = get_agent_settings_doc(email)
@@ -2327,6 +2458,12 @@ AGENT_REGISTER_TIMEOUT: tuple[int, int] = (10, 30)
 #: Signing in. A password verification and a token mint — the same deliberate
 #: slowness as above, without the writes.
 AGENT_LOGIN_TIMEOUT: tuple[int, int] = (10, 30)
+
+#: Reading the country list for the sign-up form. A constant the platform holds
+#: in memory, fetched while somebody is looking at a form, so it is the one
+#: call here that should give up quickly: the same server is about to be asked
+#: to create the account, and if it cannot answer this it cannot do that either.
+AGENT_COUNTRIES_TIMEOUT: tuple[int, int] = (5, 10)
 
 #: Renewing an expired token, which sits on the critical path of EVERY request
 #: this app makes. Expiring here fails the customer's turn, so it is not tight;

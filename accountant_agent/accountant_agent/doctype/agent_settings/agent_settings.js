@@ -485,6 +485,15 @@ function bind_company_knowledge_actions(frm, $box, email, saved_country) {
 	});
 }
 
+//: Where a customer goes to buy more of their monthly budget.
+//:
+//: NAMED ONCE, here, and read by the usage card below. The Odoo module renders
+//: the same link on its own settings form, so this address exists in two
+//: products; one hard-coded copy per product is the most that should ever exist,
+//: and a second copy inside this file would be the one that goes stale.
+const AGENT_PRICING_URL = "https://razyyn.com/pricing/";
+
+
 function get_usage_container(frm) {
 	if (frm.fields_dict.usage_html && frm.fields_dict.usage_html.wrapper) {
 		return $(frm.fields_dict.usage_html.wrapper);
@@ -640,6 +649,27 @@ function render_usage_dashboard(frm, data, email) {
 						${__('30-day billing cycle usage')}
 					</p>
 				</div>
+			</div>
+
+			<!-- WHERE TO GO WHEN THE BAR IS FULL.
+			     A customer who reads "94%" on this card has one question, and
+			     until now the card answered none of it: the plans are on the
+			     website, the website is not linked from anywhere in the ERP, and
+			     the next thing that happened was a refused request with no
+			     warning. The link sits under the bar because that is where the
+			     question is asked.
+			     rel="noopener noreferrer" on a target="_blank" link is not
+			     optional: without it the opened page gets a handle on this desk
+			     through window.opener. -->
+			<div style="margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-color, #f3f4f6); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;">
+				<span style="font-size: 12px; color: var(--text-muted, #6b7280);">
+					${__('Need a larger monthly budget?')}
+				</span>
+				<a href="${AGENT_PRICING_URL}" target="_blank" rel="noopener noreferrer"
+				   class="btn btn-primary btn-sm"
+				   style="font-weight: 600; border-radius: 6px; text-decoration: none;">
+					${__('Upgrade plan')} <i class="fa fa-external-link" style="margin-left: 4px;"></i>
+				</a>
 			</div>
 		</div>
 	`;

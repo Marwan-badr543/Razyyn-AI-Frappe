@@ -134,3 +134,42 @@ class ARecordIsFoundByItsOwnName(unittest.TestCase):
 		searched = _fields_a_person_might_name(meta)
 
 		self.assertEqual(len(searched), len(set(searched)))
+
+	def test_a_date_or_a_figure_is_never_searched(self):
+		"""The live failure on every ERPNext bench. Journal Entry ships with
+		`posting_date, due_date` in its search list; `LIKE '%JVC%'` against a
+		Date column is refused by the framework as "not a valid date string",
+		and with it every text search on the DocType. Only columns that hold a
+		name may enter the ladder — decided by the type's class, never by which
+		document type it is."""
+		meta = _Meta(
+			[_Field("voucher_type", "Select"), _Field("posting_date", "Date"),
+			 _Field("due_date", "Date"), _Field("cheque_no"),
+			 _Field("modified_at", "Datetime"), _Field("total_debit", "Currency"),
+			 _Field("difference", "Float"), _Field("rows", "Int"),
+			 _Field("discount", "Percent"), _Field("is_opening", "Check"),
+			 _Field("posted_at", "Time"), _Field("company", "Link"),
+			 _Field("reference", "Dynamic Link")],
+			search_fields="voucher_type, posting_date, due_date, cheque_no, "
+			              "modified_at, total_debit, difference, rows, discount, "
+			              "is_opening, posted_at, company, reference",
+		)
+
+		searched = _fields_a_person_might_name(meta)
+
+		self.assertEqual(
+			searched,
+			["name", "voucher_type", "cheque_no", "company", "reference"],
+		)
+
+	def test_a_column_of_no_stated_type_is_not_searched_blind(self):
+		"""A type the definition does not state cannot be shown to be a name,
+		and searching it blind is exactly how a date column took every search
+		down. The reference is still searched, so the record stays findable."""
+		untyped = _Field("mystery")
+		del untyped.fieldtype
+		meta = _Meta([untyped], search_fields="mystery")
+
+		searched = _fields_a_person_might_name(meta)
+
+		self.assertEqual(searched, ["name"])
