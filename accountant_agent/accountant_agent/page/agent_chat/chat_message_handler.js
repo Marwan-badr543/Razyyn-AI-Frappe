@@ -361,6 +361,7 @@ class ChatMessageHandler {
 			if (this.chat.session_manager.session_id === active_session_id) {
 				this.set_button_state("send");
 				console.error("Message send failed:", err);
+				this.chat.stop_stream_timer(active_session_id);
 				let error_msg = err.message || "";
 				if (!error_msg.includes("cancelled") && !error_msg.includes("cancellation")) {
 					let final_err = error_msg || __("Unable to get response from Razyyn.");

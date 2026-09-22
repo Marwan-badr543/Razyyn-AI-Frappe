@@ -1160,15 +1160,26 @@ _DOCUMENT_SEARCH_FIELDS: tuple[str, ...] = (
     "party", "party_name", "bill_no", "cheque_no",
 )
 
-#: Field types that hold PROSE rather than a name. A description, a remark or a
-#: set of terms may legitimately be listed as searchable, and matching a
-#: person's words against one turns a narrow search into everything anybody
-#: ever wrote a note on. Names are matched; paragraphs are not.
-_PROSE_FIELDTYPES: frozenset[str] = frozenset(
-    {
-        "Text", "Small Text", "Long Text", "Text Editor", "Markdown Editor",
-        "HTML Editor", "HTML", "Code", "JSON", "Comment",
-    }
+#: Field types whose stored value is a NAME a person's own words can match: a
+#: short text, a reference to another record, or one option of a fixed set.
+#: Only these enter the LIKE ladder. Deciding by the type's class, and by
+#: what is allowed rather than what is banned, keeps out both kinds of column
+#: that must never be searched:
+#:
+#:   PROSE (Text, Small Text, Text Editor ...). A description, a remark or a
+#:   set of terms may legitimately be listed as searchable, and matching a
+#:   person's words against one turns a narrow search into everything anybody
+#:   ever wrote a note on. Names are matched; paragraphs are not.
+#:
+#:   DATES AND FIGURES (Date, Datetime, Currency, Float, Int, Check ...).
+#:   ERPNext ships Journal Entry with `posting_date, due_date` in its
+#:   `search_fields`, and `LIKE '%JVC%'` against a Date column is not a wide
+#:   search but a fatal one: the framework parses the pattern as a date,
+#:   refuses the whole query, and every text search on that DocType came back
+#:   as an error instead of a document. A person's words never match a date
+#:   or an amount through LIKE, so nothing is lost by leaving them out.
+_NAME_FIELDTYPES: frozenset[str] = frozenset(
+    {"Data", "Link", "Dynamic Link", "Select", "Autocomplete", "Read Only", "Phone"}
 )
 
 
@@ -1182,9 +1193,10 @@ def _fields_a_person_might_name(meta) -> list[str]:
     of is searchable by the name its users actually use — and it is the only
     version of this that cannot go stale.
 
-    The reference itself always comes first, and prose columns never come at
-    all. What is left is the generic party and identity list, for the
-    transaction documents that carry one.
+    The reference itself always comes first, and only name-like columns come
+    at all: a paragraph is too wide a match and a date or a figure is a query
+    the database refuses outright. What is left is the generic party and
+    identity list, for the transaction documents that carry one.
     """
     by_name = {df.fieldname: df for df in meta.fields if df.fieldname}
 
@@ -1201,10 +1213,10 @@ def _fields_a_person_might_name(meta) -> list[str]:
         for fieldname in dict.fromkeys(wanted)
         if fieldname == "name"
         or (fieldname in by_name
-            # `getattr` because this reads whatever the definition publishes:
-            # a column that does not declare a type is not prose, and refusing
-            # to search it would be a worse answer than searching it.
-            and getattr(by_name[fieldname], "fieldtype", "") not in _PROSE_FIELDTYPES)
+            # `getattr` because this reads whatever the definition publishes.
+            # A column that declares no type cannot be shown to be a name, and
+            # searching it blind is how a date column took every search down.
+            and getattr(by_name[fieldname], "fieldtype", "") in _NAME_FIELDTYPES)
     ]
 
 #: In order. The first one the DocType has is the figure an accountant would
@@ -1847,6 +1859,7 @@ def _preflight_transactional(doc: Any) -> tuple[list[PreflightFinding], bool]:
     """
     savepoint = "agent_preflight"
     findings: list[PreflightFinding] = []
+    refused: tuple[BaseException, str] | None = None
     try:
         frappe.db.savepoint(savepoint)
         doc.run_method("validate")
@@ -1855,15 +1868,12 @@ def _preflight_transactional(doc: Any) -> tuple[list[PreflightFinding], bool]:
             PreflightFinding("BLOCKING", "PERMISSION_DENIED", "", None, _user_message("PERMISSION_DENIED", str(exc)))
         )
     except Exception as exc:
-        findings.append(
-            PreflightFinding(
-                severity="BLOCKING",
-                code=_classify_exception(exc),
-                field_path="",
-                raw_value=None,
-                human_message=_user_message(_classify_exception(exc), str(exc)),
-            )
-        )
+        # HELD UNTIL AFTER THE ROLLBACK BELOW, together with its traceback. A
+        # crash writes the traceback to the site Error Log, and a row written
+        # before the rollback is undone by it along with everything validate()
+        # touched. The traceback has to be taken here: past the handler there
+        # is no longer an exception to read one from.
+        refused = (exc, frappe.get_traceback())
     finally:
         try:
             frappe.db.rollback(save_point=savepoint)
@@ -1872,6 +1882,19 @@ def _preflight_transactional(doc: Any) -> tuple[list[PreflightFinding], bool]:
                 title="Agent preflight: savepoint rollback failed",
                 message=frappe.get_traceback(),
             )
+
+    if refused is not None:
+        exc, traceback = refused
+        code, sentence, _operator_note = _refusal(exc, doc.doctype, traceback)
+        findings.append(
+            PreflightFinding(
+                severity="BLOCKING",
+                code=code,
+                field_path="",
+                raw_value=None,
+                human_message=sentence,
+            )
+        )
     return findings, True
 
 
@@ -1956,6 +1979,66 @@ def _user_message(code: str, raw: str) -> str:
     if cleaned:
         return cleaned
     return _DEFAULT_MESSAGE_BY_CODE.get(code, _DEFAULT_MESSAGE_BY_CODE["WRITE_REJECTED"])
+
+
+#: What the customer reads when their system crashed on the document rather
+#: than refusing it. Names the document type and nothing about the crash.
+_COULD_NOT_PROCESS: str = (
+    "Your system could not process this {doctype}. The details have been "
+    "saved to its error log for your administrator."
+)
+
+
+def _is_the_systems_own_refusal(exc: BaseException) -> bool:
+    """Whether this exception is the ERP speaking to a person.
+
+    The framework's validation family — everything `frappe.throw` raises,
+    which is every rule an accounting controller enforces — carries a sentence
+    written for the customer. So does each class this gateway maps to a code.
+    Anything else is a crash: a `TypeError` from a controller that met a
+    document it could not price is Python speaking to a programmer.
+    """
+    if isinstance(exc, frappe.ValidationError):
+        return True
+    return any(
+        isinstance(exc, klass)
+        for klass in (getattr(frappe, name, None) for name, _ in _EXCEPTION_CODES)
+        if klass is not None
+    )
+
+
+def _refusal(exc: BaseException, doctype: str, traceback: str = "") -> tuple[str, str, str]:
+    """(code, the sentence the customer reads, the note the write log keeps).
+
+    THE ERP'S OWN REFUSALS ARE SENTENCES; A CRASH IS NOT
+        Every other refusal in this gateway reaches the customer as a sentence
+        their system wrote for them. An unexpected exception from inside the
+        ERP — ERPNext's own controller raising `TypeError: unsupported operand
+        type(s) for -: 'NoneType' and 'float'` on an item-less invoice — used
+        to take the same path, and the customer read the Python error as the
+        accounting reason their document was refused, while the traceback was
+        thrown away and the site's Error Log stayed empty.
+
+        So the two readers are told two different things. The customer gets a
+        plain sentence naming the document type. The operator gets the
+        exception's class and message on the write-log row, and the whole
+        traceback in the site Error Log — the one place a support ticket can
+        be answered from.
+
+    ``traceback`` is passed by a caller that has already left the exception
+    handler — outside one, there is no exception left to read a traceback off.
+    """
+    code = _classify_exception(exc)
+    if _is_the_systems_own_refusal(exc):
+        sentence = _user_message(code, str(exc))
+        return code, sentence, sentence
+
+    frappe.log_error(
+        title=f"Agent write: {type(exc).__name__} on {doctype}",
+        message=traceback or frappe.get_traceback(),
+    )
+    operator_note = _clean_message(f"{type(exc).__name__}: {exc}")
+    return code, _COULD_NOT_PROCESS.format(doctype=doctype), operator_note
 
 
 def _clean_message(message: str) -> str:
@@ -2249,7 +2332,7 @@ def create_document(
 
     except Exception as exc:
         frappe.db.rollback(save_point=savepoint)
-        code = _classify_exception(exc)
+        code, sentence, operator_note = _refusal(exc, doctype)
         record_failed_attempt(
             idempotency_key=idempotency_key,
             action="create",
@@ -2258,9 +2341,9 @@ def create_document(
             run_id=run_id,
             session_id=session_id,
             error_code=code,
-            error_message=_user_message(code, str(exc)),
+            error_message=operator_note,
         )
-        raise WriteRejectedError(_user_message(code, str(exc)), code=code)
+        raise WriteRejectedError(sentence, code=code)
 
 
 def submit_existing_document(
@@ -2601,7 +2684,7 @@ def _mutate_existing(
 
     except Exception as exc:
         frappe.db.rollback(save_point=savepoint)
-        code = _classify_exception(exc)
+        code, sentence, operator_note = _refusal(exc, doctype)
         record_failed_attempt(
             idempotency_key=idempotency_key,
             action=action,
@@ -2610,9 +2693,9 @@ def _mutate_existing(
             run_id=run_id,
             session_id=session_id,
             error_code=code,
-            error_message=_user_message(code, str(exc)),
+            error_message=operator_note,
         )
-        raise WriteRejectedError(_user_message(code, str(exc)), code=code)
+        raise WriteRejectedError(sentence, code=code)
 
 
 def write_documents_batch(

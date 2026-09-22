@@ -646,7 +646,7 @@ class ChatUIManager {
 
 		let editor_html = `
 			<div class="agent-msg-edit-box">
-				<textarea class="agent-msg-edit-textarea">${frappe.utils.escape_html(raw_content)}</textarea>
+				<textarea class="agent-msg-edit-textarea" dir="auto">${frappe.utils.escape_html(raw_content)}</textarea>
 				<div class="agent-msg-edit-controls">
 					<button class="btn btn-xs btn-secondary agent-msg-edit-cancel">${__("Cancel")}</button>
 					<button class="btn btn-xs btn-primary agent-msg-edit-save">${__("Save & Submit")}</button>
@@ -820,7 +820,7 @@ class ChatUIManager {
 					<div class="agent-todo-item-row">
 						<span class="agent-todo-status-icon">${this._todo_status_icon(task.status)}</span>
 						<i class="fa ${this._todo_kind_icon(task)} agent-todo-kind-icon"></i>
-						<span class="agent-todo-title">${frappe.utils.escape_html(task.title || "")}</span>
+						<span class="agent-todo-title" dir="auto">${frappe.utils.escape_html(task.title || "")}</span>
 						<span class="agent-todo-status-label">${this._todo_status_label(task.status)}</span>
 						${caret}
 					</div>
@@ -1593,6 +1593,37 @@ class ChatUIManager {
 		return html;
 	}
 
+	// EVERY PARAGRAPH READS IN ITS OWN DIRECTION. The agent answers in the
+	// customer's language, and an Arabic, Hebrew, Persian or Urdu answer
+	// always carries Latin inside it: account names, item codes, "IFRS",
+	// "Razyyn AI", a document number. Rendered into an English page, such a
+	// paragraph starts at the left and the browser lays its Arabic out
+	// against the Latin — the customer reads it as flipped. dir="auto" on
+	// each block makes the browser read the block's first strong letter and
+	// set that block's direction from it: Arabic paragraphs start at the
+	// right with their bullets and table cells following, English ones at the
+	// left, and the Latin words inside an Arabic sentence still run
+	// left-to-right on their own, as the bidi algorithm has always done. It
+	// is per block, so a reply that mixes languages reads right in both,
+	// and it knows nothing about which languages exist.
+	//
+	// The blocks, not the bubble: one attribute on the bubble would set the
+	// whole answer from its first letter, and an English heading over Arabic
+	// paragraphs would flip every paragraph under it. A <template> is inert,
+	// so the sanitized markup is walked without ever running — this runs on
+	// what DOMPurify has already passed, never on raw text.
+	readable_in_its_own_direction(html) {
+		if (!html || typeof document === "undefined") return html;
+		let holder = document.createElement("template");
+		holder.innerHTML = html;
+		holder.content
+			.querySelectorAll("p, li, h1, h2, h3, h4, h5, h6, th, td, blockquote, pre, summary, ul, ol, table")
+			.forEach((block) => {
+				if (!block.hasAttribute("dir")) block.setAttribute("dir", "auto");
+			});
+		return holder.innerHTML;
+	}
+
 	// `stream.current_agent`/`data.agent` is meant to be a short desk key
 	// ("ask", "analyse", ...), but it arrives over the realtime channel as a
 	// plain string, and it gets interpolated raw into a `class="agent-type-…"`
@@ -1609,7 +1640,7 @@ class ChatUIManager {
 
 		if (window.marked && window.DOMPurify) {
 			try {
-				return this.sanitize_html(window.marked.parse(text));
+				return this.readable_in_its_own_direction(this.sanitize_html(window.marked.parse(text)));
 			} catch (err) {
 				console.error("Marked parsing error:", err);
 			}
@@ -1745,7 +1776,7 @@ class ChatUIManager {
 		temp_output = temp_output.replace(/```(.*?)```/gs, "<pre><code>$1</code></pre>");
 		temp_output = temp_output.replace(/`(.*?)`/g, "<code>$1</code>");
 
-		return this.sanitize_html(temp_output);
+		return this.readable_in_its_own_direction(this.sanitize_html(temp_output));
 	}
 
 	post_process_rendered_bubble(container) {
