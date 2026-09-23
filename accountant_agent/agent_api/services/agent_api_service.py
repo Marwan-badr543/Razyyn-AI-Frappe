@@ -233,6 +233,26 @@ def assert_query_is_read_only(clean_query: str) -> None:
 	if not _SELECT_START_PATTERN.match(clean_query):
 		raise ForbiddenQueryError("Only SELECT queries are allowed for security reasons.")
 
+	# A BACKSLASH IS REFUSED BEFORE THE LITERALS ARE MASKED.
+	#
+	#     ``_mask_string_literals`` treats ``\\'`` as an escaped quote that keeps a
+	#     string open. MariaDB reads it that way by default, so the mask and the
+	#     engine agree here today; a site running with ``NO_BACKSLASH_ESCAPES``,
+	#     or a Postgres-backed site, reads ``'a\\'`` as a closed two-char string
+	#     and runs whatever follows as live SQL — the divergence that let a
+	#     single-statement ``SELECT 'x\\' AS a, secret FROM ...`` mask its own
+	#     FROM clause out of the scan on the platform and Odoo guards. No
+	#     accounting SELECT needs a literal backslash (a quote inside a string is
+	#     ``''``), so it is refused outright, keeping this guard byte-for-byte in
+	#     step with ``agent/tools/sql_guard.py`` and the Odoo app's guard.
+	if "\\" in clean_query:
+		raise ForbiddenQueryError(
+			"Query must not contain a backslash (\\). Database engines disagree "
+			"on whether it escapes a quote, which can hide a second statement or "
+			"a forbidden table from this check. Write a literal quote inside a "
+			"string as '' (two single quotes) and remove the backslash."
+		)
+
 	scannable = _mask_string_literals(clean_query)
 
 	# Stacked statements. pymysql does not enable MULTI_STATEMENTS, but psycopg2

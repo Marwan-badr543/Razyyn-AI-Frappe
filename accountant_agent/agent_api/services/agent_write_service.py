@@ -2121,6 +2121,27 @@ def _document_company(doc) -> str:
     return str(doc.get("company") or "")
 
 
+def _document_party(doc) -> str:
+    """Who a document is WITH, by name, or nothing.
+
+    THE ONE FACT A PERSON CHECKS A DOCUMENT BY. A receipt or a card carrying
+    only a reference, a total and a company describes every other document for
+    the same amount just as well, so one naming the WRONG document is
+    indistinguishable from one naming the right document. On the other ERP that
+    cost a customer six approval rounds and a posted invoice under a real
+    number, all for a party no card ever showed.
+
+    The same ladder `_row_party` walks for the search route, deliberately: one
+    client reads both, and two answers about one document is worse than none.
+    """
+    for fieldname in ("customer_name", "customer", "supplier_name", "supplier",
+                      "party_name", "party"):
+        value = doc.get(fieldname)
+        if value:
+            return str(value)
+    return ""
+
+
 def _replay_identity(doctype, docname) -> dict:
     """The name and company of a document a replay points at.
 
@@ -2133,10 +2154,12 @@ def _replay_identity(doctype, docname) -> dict:
     try:
         if doctype and docname and frappe.db.exists(doctype, docname):
             doc = frappe.get_doc(doctype, docname)
-            return {"label": _document_label(doc), "company": _document_company(doc)}
+            return {"label": _document_label(doc),
+                    "company": _document_company(doc),
+                    "party": _document_party(doc)}
     except Exception:
         pass
-    return {"label": str(docname or ""), "company": ""}
+    return {"label": str(docname or ""), "company": "", "party": ""}
 
 
 def _document_amount(doc: Any) -> float | None:
@@ -2310,6 +2333,10 @@ def create_document(
             # they read is built from this row and from nothing else.
             "label": _document_label(doc),
             "company": _document_company(doc),
+            # AND WHO IT IS WITH. A receipt naming only a reference and a total
+            # cannot be checked against what the person asked for — the party
+            # is the fact they would notice was wrong. See `_document_party`.
+            "party": _document_party(doc),
         }
 
     except _DUPLICATE_KEY_ERRORS as exc:
@@ -2651,6 +2678,7 @@ def _mutate_existing(
             "idempotency_key": idempotency_key,
             "label": _document_label(doc),
             "company": _document_company(doc),
+            "party": _document_party(doc),
         }
         not_taken = verify(doc) if verify is not None else []
         if not_taken:

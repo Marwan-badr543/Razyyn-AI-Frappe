@@ -592,7 +592,22 @@ def list_written_documents(limit: int = 20, target_doctype: str | None = None) -
 
 
 def get_document_state(doctype: str, docname: str) -> dict | None:
-    """Current docstatus and headline amount, read as the agent user."""
+    """Current docstatus, headline amount and WHO IT IS WITH, as the agent user.
+
+    THE PARTY IS NOT DECORATION ON THIS ROUTE. This answer is what fills the
+    "this document now:" line on the card a person approves before an existing
+    document is changed, posted or reversed. Without a party that line reads
+    "8,000.00, Main Company" — a description that fits every other invoice for
+    the same amount, so a card proposing a change to the WRONG document looks
+    exactly like a card proposing a change to the right one.
+
+    Live on the other ERP (2026-09-22) that is precisely what happened: an
+    invoice was approved, posted, reversed and re-entered across six rounds
+    with the wrong customer on it, and no card in any of those rounds could
+    show whose it was. `search_documents` here has published `party` since it
+    was written; this route had not, so the two disagreed about what a
+    document is. They agree now.
+    """
     if not frappe.db.exists(doctype, docname):
         return None
     doc = frappe.get_doc(doctype, docname)
@@ -604,7 +619,27 @@ def get_document_state(doctype: str, docname: str) -> dict | None:
         "amount": _headline_amount(doc),
         "posting_date": str(doc.get("posting_date") or ""),
         "company": doc.get("company"),
+        "party": _document_party(doc),
+        # The title where the DocType carries one, for the same reason the
+        # search route sends it: the reference is the label on ERPNext, but a
+        # titled document reads better by its title.
+        "title": str(doc.get("title") or ""),
     }
+
+
+def _document_party(doc: Any) -> str:
+    """Who a document is WITH, by name, or nothing.
+
+    The same ladder `agent_write_service._row_party` walks, and for the same
+    reason: one client reads both routes and must not be told two different
+    things about one document.
+    """
+    for fieldname in ("customer_name", "customer", "supplier_name", "supplier",
+                      "party_name", "party"):
+        value = doc.get(fieldname)
+        if value:
+            return str(value)
+    return ""
 
 
 def _headline_amount(doc: Any) -> float | None:
