@@ -97,9 +97,7 @@ class ACancelledRowIsUnreachable(unittest.TestCase):
 	def test_an_or_cannot_bring_a_dead_row_back(self):
 		"""The old failure mode: a predicate the model wrote defeated by an OR.
 		Now the OR is evaluated over live rows only, so it cannot."""
-		sql, _, _ = _rewrite(
-			"SELECT * FROM `tabGL Entry` WHERE is_cancelled = 0 OR voucher_no = 'JV-1'"
-		)
+		sql, _, _ = _rewrite("SELECT * FROM `tabGL Entry` WHERE is_cancelled = 0 OR voucher_no = 'JV-1'")
 		self.assertIn("(SELECT * FROM `tabGL Entry` WHERE is_cancelled = 0) AS `tabGL Entry`", sql)
 		self.assertIn("OR voucher_no = 'JV-1'", sql)
 
@@ -126,7 +124,7 @@ class ACancelledRowIsUnreachable(unittest.TestCase):
 
 	def test_a_site_without_the_parser_runs_as_written_and_says_so(self):
 		with mock.patch.object(live_rows, "sqlglot", None):
-			sql, applied, enforced = _rewrite("SELECT 1 FROM `tabGL Entry`")
+			sql, _applied, enforced = _rewrite("SELECT 1 FROM `tabGL Entry`")
 		self.assertEqual(sql, "SELECT 1 FROM `tabGL Entry`")
 		self.assertFalse(enforced)
 
@@ -169,7 +167,9 @@ def _site(doctypes: dict, columns: dict, parents: dict | None = None):
 		mock.patch.object(svc, "doctype_exists", side_effect=lambda name: name in doctypes),
 		mock.patch.object(svc, "get_doctype_metadata", side_effect=lambda name: doctypes[name]),
 		mock.patch.object(svc, "get_table_columns", side_effect=lambda name: list(columns.get(name, []))),
-		mock.patch.object(svc, "_documents_holding", side_effect=lambda child: list((parents or {}).get(child, []))),
+		mock.patch.object(
+			svc, "_documents_holding", side_effect=lambda child: list((parents or {}).get(child, []))
+		),
 	)
 
 
@@ -208,7 +208,9 @@ class TheFilterIsReadOffTheDefinition(unittest.TestCase):
 		columns = {"Sales Invoice Item": ["name", "docstatus", "parent", "amount"]}
 		doctypes["Sales Invoice"] = _Meta(submittable=1)
 		self.assertEqual(
-			self._filter("tabSales Invoice Item", doctypes, columns, {"Sales Invoice Item": ["Sales Invoice"]}),
+			self._filter(
+				"tabSales Invoice Item", doctypes, columns, {"Sales Invoice Item": ["Sales Invoice"]}
+			),
 			"docstatus = 1",
 		)
 
@@ -220,7 +222,9 @@ class TheFilterIsReadOffTheDefinition(unittest.TestCase):
 		}
 		columns = {"Address Link": ["name", "docstatus", "parent"]}
 		self.assertEqual(
-			self._filter("tabAddress Link", doctypes, columns, {"Address Link": ["Sales Invoice", "Customer"]}),
+			self._filter(
+				"tabAddress Link", doctypes, columns, {"Address Link": ["Sales Invoice", "Customer"]}
+			),
 			"docstatus != 2",
 		)
 
@@ -240,7 +244,8 @@ class TheReplySaysWhatWasExcluded(unittest.TestCase):
 			ran.append(query)
 			return [{"d": 1}]
 
-		patches = _site(doctypes, columns) + (
+		patches = (
+			*_site(doctypes, columns),
 			mock.patch.object(svc, "execute_select_query", side_effect=run),
 			# The caps are read off the site's config; there is no site here.
 			mock.patch.object(svc, "_max_result_rows", return_value=500),
@@ -249,7 +254,9 @@ class TheReplySaysWhatWasExcluded(unittest.TestCase):
 		for patch in patches:
 			patch.start()
 		try:
-			return svc.validate_and_execute_query(sql, "user@example.com", include_cancelled=include_cancelled), ran
+			return svc.validate_and_execute_query(
+				sql, "user@example.com", include_cancelled=include_cancelled
+			), ran
 		finally:
 			for patch in patches:
 				patch.stop()

@@ -56,7 +56,8 @@ no site behind it.
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from collections.abc import Callable
+from typing import Optional
 
 try:
 	import sqlglot
@@ -69,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 #: Answers "which rows of this table are live" with a boolean SQL predicate
 #: in the table's own columns, or None when every row of the table counts.
-FilterFor = Callable[[str], Optional[str]]
+FilterFor = Callable[[str], str | None]
 
 
 def exclude_dead_rows(sql: str, dialect: str, filter_for: FilterFor) -> tuple[str, dict[str, str], bool]:
@@ -96,12 +97,12 @@ def exclude_dead_rows(sql: str, dialect: str, filter_for: FilterFor) -> tuple[st
 
 	try:
 		tree = sqlglot.parse_one(sql, read=dialect)
-	except Exception as exc:  # noqa: BLE001 - any parse failure fails open
+	except Exception as exc:
 		logger.warning("Could not parse a statement to exclude cancelled rows: %s", exc)
 		return sql, {}, False
 
 	applied: dict[str, str] = {}
-	predicates: dict[str, Optional[str]] = {}
+	predicates: dict[str, str | None] = {}
 	# Collected BEFORE any replacement: the filtered view that replaces a table
 	# contains a Table node of its own, and that one must not be wrapped again.
 	tables = list(tree.find_all(exp.Table))
@@ -121,12 +122,12 @@ def exclude_dead_rows(sql: str, dialect: str, filter_for: FilterFor) -> tuple[st
 		if not applied:
 			return sql, {}, True
 		return tree.sql(dialect=dialect), applied, True
-	except Exception as exc:  # noqa: BLE001 - a rewrite that breaks fails open
+	except Exception as exc:
 		logger.warning("Could not rewrite a statement to exclude cancelled rows: %s", exc)
 		return sql, {}, False
 
 
-def _predicate_for(name: str, filter_for: FilterFor) -> Optional[str]:
+def _predicate_for(name: str, filter_for: FilterFor) -> str | None:
 	"""One table's liveness predicate, or None — never an exception.
 
 	The callback reads metadata on the customer's site; a table it cannot
@@ -135,7 +136,7 @@ def _predicate_for(name: str, filter_for: FilterFor) -> Optional[str]:
 	"""
 	try:
 		predicate = filter_for(name)
-	except Exception as exc:  # noqa: BLE001 - metadata that cannot be read is no filter
+	except Exception as exc:
 		logger.debug("No liveness filter for %s: %s", name, exc)
 		return None
 	predicate = (predicate or "").strip()
@@ -155,12 +156,7 @@ def _live_view(table, predicate: str, dialect: str):
 		db=table.args.get("db"),
 		catalog=table.args.get("catalog"),
 	)
-	inner = (
-		exp.Select()
-		.select(exp.Star())
-		.from_(source)
-		.where(sqlglot.condition(predicate, dialect=dialect))
-	)
+	inner = exp.Select().select(exp.Star()).from_(source).where(sqlglot.condition(predicate, dialect=dialect))
 	return exp.Subquery(this=inner, alias=exp.TableAlias(this=exp.to_identifier(alias, quoted=True)))
 
 

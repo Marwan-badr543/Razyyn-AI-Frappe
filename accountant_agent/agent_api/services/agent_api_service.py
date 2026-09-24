@@ -28,8 +28,8 @@ from accountant_agent.agent_api.db.agent_api_repository import (
 	find_settings_name_by_api_key,
 	get_chat_session_owner,
 	get_doctype_metadata,
-	get_table_columns,
 	get_settings_owner,
+	get_table_columns,
 	insert_chat_history_record,
 	update_chat_last_timestamp,
 )
@@ -486,9 +486,7 @@ def _explain_missing_table(detail: str) -> str:
 #: The tables a query names. `tab` DocType names contain spaces, so the
 #: backticked form is matched first and the bare form only where there is no
 #: whitespace to lose.
-_QUERIED_TABLE_PATTERN: re.Pattern = re.compile(
-	r"(?:FROM|JOIN)\s+(?:`(tab[^`]+)`|(tab\S+))", re.IGNORECASE
-)
+_QUERIED_TABLE_PATTERN: re.Pattern = re.compile(r"(?:FROM|JOIN)\s+(?:`(tab[^`]+)`|(tab\S+))", re.IGNORECASE)
 
 #: How many tables of one query are resolved before giving up. A query naming
 #: more than this is not one an explanation is going to rescue, and each name
@@ -525,7 +523,8 @@ def _columns_of(doctype: str) -> set[str]:
 	if not columns:
 		meta = get_doctype_metadata(doctype)
 		columns = {
-			df.fieldname for df in meta.fields
+			df.fieldname
+			for df in meta.fields
 			if df.fieldname and df.fieldtype not in _CHILD_TABLE_FIELD_TYPES
 		}
 		if bool(getattr(meta, "istable", 0)):
@@ -538,10 +537,7 @@ def _columns_of(doctype: str) -> set[str]:
 def _child_doctypes_of(doctype: str) -> list[str]:
 	"""The DocTypes whose rows belong to this one."""
 	meta = get_doctype_metadata(doctype)
-	return [
-		df.options for df in meta.fields
-		if df.fieldtype in _CHILD_TABLE_FIELD_TYPES and df.options
-	]
+	return [df.options for df in meta.fields if df.fieldtype in _CHILD_TABLE_FIELD_TYPES and df.options]
 
 
 def _documents_holding(child: str) -> list[str]:
@@ -555,7 +551,8 @@ def _documents_holding(child: str) -> list[str]:
 	"""
 	try:
 		return [
-			row.parent for row in frappe.get_all(
+			row.parent
+			for row in frappe.get_all(
 				"DocField",
 				filters={"options": child, "fieldtype": ["in", list(_CHILD_TABLE_FIELD_TYPES)]},
 				fields=["parent"],

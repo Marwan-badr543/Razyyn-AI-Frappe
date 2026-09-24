@@ -39,7 +39,6 @@ from unittest import mock
 
 from accountant_agent.agent_api.services import agent_messaging_service as service
 
-
 #: What the app ships, as `_shipped_fields()` reads it off the DocType json.
 SHIPPED = [
 	("gmail_enabled", "Check"),
@@ -106,7 +105,8 @@ class AStaleSiteStillAnswers(unittest.TestCase):
 		config = service.get_messaging_config()
 
 		self.assertEqual(
-			sorted(config["channels"]), ["gmail", "slack", "telegram"],
+			sorted(config["channels"]),
+			["gmail", "slack", "telegram"],
 			"a field the site lacks must cost that field, not the whole reply",
 		)
 
@@ -121,7 +121,7 @@ class AStaleSiteStillAnswers(unittest.TestCase):
 		self.meta = _Meta(name for name, _ in SHIPPED if name != "telegram_destinations")
 		service.frappe.get_meta.return_value = self.meta
 		self.settings.telegram_enabled = 1
-		self.settings.email_destinations = []   # this site DID migrate that one
+		self.settings.email_destinations = []  # this site DID migrate that one
 		del self.settings.telegram_destinations
 
 		telegram = service.get_messaging_config()["channels"]["telegram"]
@@ -134,7 +134,8 @@ class AStaleSiteStillAnswers(unittest.TestCase):
 		service.get_messaging_config()
 
 		self.assertEqual(
-			self.log_error.call_count, 1,
+			self.log_error.call_count,
+			1,
 			"a stale site names its gap once, not once per turn",
 		)
 		self.assertIn("email_destinations", self.log_error.call_args.kwargs["message"])

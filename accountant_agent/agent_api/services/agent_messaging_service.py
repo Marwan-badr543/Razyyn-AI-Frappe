@@ -170,7 +170,11 @@ def _shipped_fields() -> list[tuple[str, str]]:
 	if _SHIPPED_FIELDS is None:
 		name = frappe.scrub(SETTINGS_DOCTYPE)
 		path = frappe.get_app_path(
-			"accountant_agent", "accountant_agent", "doctype", name, f"{name}.json",
+			"accountant_agent",
+			"accountant_agent",
+			"doctype",
+			name,
+			f"{name}.json",
 		)
 		with open(path, encoding="utf-8") as handle:
 			definition = json.load(handle)
@@ -195,13 +199,11 @@ def _settings():
 	settings = frappe.get_single(SETTINGS_DOCTYPE)
 	meta = frappe.get_meta(SETTINGS_DOCTYPE)
 	missing = [
-		(fieldname, fieldtype)
-		for fieldname, fieldtype in _shipped_fields()
-		if not meta.get_field(fieldname)
+		(fieldname, fieldtype) for fieldname, fieldtype in _shipped_fields() if not meta.get_field(fieldname)
 	]
 	for fieldname, fieldtype in missing:
 		setattr(settings, fieldname, [] if fieldtype == "Table" else None)
-	settings.razyyn_unmigrated_fields = frozenset(name for name, _ in missing)
+	settings.razyyn_unmigrated_fields = frozenset(name for name, _fieldtype in missing)
 	if missing:
 		_report_stale_schema(settings.razyyn_unmigrated_fields)
 	return settings
@@ -344,10 +346,7 @@ def _gmail_gap(settings) -> str:
 	if not settings.gmail_sender_email:
 		return "No sending mailbox has been set in Agent Messaging Settings."
 	if not settings.gmail_smtp_host:
-		return (
-			"No mail server has been set in Agent Messaging Settings. For Gmail "
-			"that is smtp.gmail.com."
-		)
+		return "No mail server has been set in Agent Messaging Settings. For Gmail " "that is smtp.gmail.com."
 	return (
 		"The mailbox password has not been saved yet. For Gmail this must be a "
 		"16-character App Password, not the account's own password."
@@ -528,14 +527,16 @@ def _send_gmail(settings, to: str, subject: str, body: str, attachments: list[di
 	try:
 		if security == SMTP_SSL:
 			server = smtplib.SMTP_SSL(
-				host, port, timeout=SMTP_TIMEOUT, context=ssl.create_default_context(),
+				host,
+				port,
+				timeout=SMTP_TIMEOUT,
+				context=ssl.create_default_context(),
 			)
 		else:
 			server = smtplib.SMTP(host, port, timeout=SMTP_TIMEOUT)
 	except Exception as exc:
 		raise ProviderRefusedError(
-			f"This system could not reach the mail server {host} on port {port}: "
-			f"{exc}",
+			f"This system could not reach the mail server {host} on port {port}: " f"{exc}",
 			code="SMTP_UNREACHABLE",
 		) from exc
 
@@ -569,8 +570,7 @@ def _send_gmail(settings, to: str, subject: str, body: str, attachments: list[di
 		raise
 	except smtplib.SMTPRecipientsRefused as exc:
 		raise ProviderRefusedError(
-			f"The mail server would not accept the address {to}: "
-			f"{_smtp_reason(exc)}",
+			f"The mail server would not accept the address {to}: " f"{_smtp_reason(exc)}",
 			code="SMTP_RECIPIENT_REFUSED",
 		) from exc
 	except Exception as exc:
@@ -597,7 +597,7 @@ def _smtp_reason(exc: Exception) -> str:
 	an accountant is quoting a Python repr at them.
 	"""
 	detail = getattr(exc, "smtp_error", None)
-	if isinstance(detail, (bytes, bytearray)):
+	if isinstance(detail, bytes | bytearray):
 		detail = detail.decode("utf-8", "replace")
 	return str(detail or exc)[:300]
 
