@@ -42,7 +42,8 @@ repos:
                 .*node_modules.*|
                 .*boilerplate.*|
                 accountant_agent/templates/includes/.*|
-                accountant_agent/public/js/lib/.*
+                accountant_agent/public/js/lib/.*|
+                accountant_agent/accountant_agent/page/agent_chat/agent_chat\.js
             )$
 
 
@@ -60,7 +61,8 @@ repos:
                 .*node_modules.*|
                 .*boilerplate.*|
                 accountant_agent/templates/includes/.*|
-                accountant_agent/public/js/lib/.*
+                accountant_agent/public/js/lib/.*|
+                accountant_agent/accountant_agent/page/agent_chat/agent_chat\.js
             )$
 
 ci:
